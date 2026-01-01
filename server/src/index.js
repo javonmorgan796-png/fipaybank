@@ -41,7 +41,13 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Enhanced CORS configuration for production
 const allowedOrigins = process.env.CLIENT_ORIGINS 
   ? process.env.CLIENT_ORIGINS.split(',') 
-  : ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:3000'];
+  : [
+      'https://fipay.onrender.com',
+      'https://fipaybank.onrender.com',
+      'http://localhost:5173',
+      'http://localhost:8080',
+      'http://localhost:3000' // Keep existing localhost:3000 if you still need it
+    ];
 
 console.log('Allowed CORS origins:', allowedOrigins);
 
