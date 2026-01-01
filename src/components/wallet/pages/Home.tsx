@@ -17,7 +17,7 @@ const Home = () => {
     if (!user?.id) return;
 
     const API_BASE =
-      (import.meta.env.VITE_API_BASE as string) || "http://localhost:5000";
+      (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
 
     let timer: number;
 
