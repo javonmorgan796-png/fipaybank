@@ -54,7 +54,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const CURRENT_USER_KEY = "current_user";
 
 const API_BASE =
-  (import.meta.env.VITE_API_BASE as string) || "http://localhost:5000";
+  (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
 
 /* =======================
    PROVIDER
