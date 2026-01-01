@@ -38,7 +38,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin', 'x-user-id', 'X-Requested-With', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin', 'x-user-id', 'user-id', 'X-Requested-With', 'Accept'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
   optionsSuccessStatus: 200,
   maxAge: 86400
@@ -106,7 +106,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// Test CORS endpoint - ADD THIS BEFORE ALL OTHER ROUTES
+// Test CORS endpoint
 app.get('/api/test-cors', (req, res) => {
   res.json({
     success: true,
@@ -114,6 +114,15 @@ app.get('/api/test-cors', (req, res) => {
     origin: req.headers.origin,
     timestamp: new Date().toISOString(),
     cors: '✅ Enabled for your origin'
+  });
+});
+
+// Public test endpoint (no auth required)
+app.get('/api/test-public', (req, res) => {
+  return res.json({
+    success: true,
+    message: 'Public endpoint - no authentication required',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -321,34 +330,54 @@ const successResponse = (res, data = {}, status = 200) => {
   });
 };
 
-// Authentication middleware (basic)
+// FIXED: Authentication middleware (more flexible)
 const authenticateUser = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return errorResponse(res, 401, 'Authentication required');
+    // Try multiple ways to get user ID
+    let userId = req.headers['x-user-id'] || 
+                 req.headers['user-id'] ||
+                 req.query.userId || 
+                 req.body.userId;
+    
+    // Also check Authorization header for Bearer token
+    if (!userId && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      const token = req.headers.authorization.split(' ')[1];
+      // If token is a valid ObjectId, use it as userId
+      if (mongoose.Types.ObjectId.isValid(token)) {
+        userId = token;
+      }
     }
 
-    const token = authHeader.split(' ')[1];
-    // For now, using simple token check - you should implement proper JWT validation
-    const userId = req.headers['x-user-id'] || req.query.userId;
-    
     if (!userId) {
-      return errorResponse(res, 401, 'User ID required');
+      console.log('[AUTH] No user ID found in request');
+      return errorResponse(res, 401, 'Authentication required. Please provide user ID.');
+    }
+
+    // Clean up user ID
+    userId = userId.toString().trim();
+    
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.log('[AUTH] Invalid user ID format:', userId);
+      return errorResponse(res, 401, 'Invalid user ID format');
     }
 
     const user = await User.findById(userId);
     if (!user) {
+      console.log('[AUTH] User not found with ID:', userId);
       return errorResponse(res, 404, 'User not found');
     }
 
     if (user.suspended) {
+      console.log('[AUTH] User suspended:', userId);
       return errorResponse(res, 403, 'Account suspended');
     }
 
+    console.log('[AUTH] User authenticated:', user.email);
     req.user = user;
+    req.userId = userId;
     next();
   } catch (error) {
+    console.error('[AUTH] Error:', error);
     return errorResponse(res, 500, 'Authentication error', error);
   }
 };
@@ -369,6 +398,110 @@ const requireAdmin = async (req, res, next) => {
     return errorResponse(res, 500, 'Admin authentication error', error);
   }
 };
+
+// Test authentication endpoint
+app.get('/api/auth/test', authenticateUser, async (req, res) => {
+  return successResponse(res, {
+    message: 'Authentication successful!',
+    user: {
+      id: req.user._id,
+      email: req.user.email,
+      name: req.user.name
+    },
+    authInfo: {
+      method: 'authenticated endpoint',
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+// Authentication endpoints
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    let { email, password, name, phone, countryCode, countryName, countryFlag, dialCode } = req.body;
+    
+    console.log('[signup] attempt for', email);
+    
+    if (!email || !password || !name) {
+      console.log('[signup] missing fields for', email);
+      return errorResponse(res, 400, 'Missing required fields: email, password, name');
+    }
+
+    // Normalize email
+    email = String(email).toLowerCase().trim();
+
+    const existing = await User.findOne({ email });
+    if (existing) {
+      console.log('[signup] user already exists:', email);
+      return errorResponse(res, 409, 'User already exists');
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = new User({ 
+      email, 
+      password: hashed, 
+      name, 
+      phone, 
+      countryCode, 
+      countryName, 
+      countryFlag, 
+      dialCode 
+    });
+    
+    await user.save();
+    console.log('[signup] user created:', user.email);
+
+    const userObj = user.toObject();
+    delete userObj.password;
+
+    return successResponse(res, { user: userObj }, 201);
+  } catch (err) {
+    console.error('[signup] error', err);
+    return errorResponse(res, 500, 'Failed to create account', err);
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return errorResponse(res, 400, 'Missing email or password');
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) {
+      return errorResponse(res, 401, 'Invalid credentials');
+    }
+
+    if (user.suspended) {
+      return errorResponse(res, 403, 'Account suspended');
+    }
+
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) {
+      return errorResponse(res, 401, 'Invalid credentials');
+    }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    const userObj = user.toObject();
+    delete userObj.password;
+
+    // Return user ID explicitly for frontend to use
+    return successResponse(res, { 
+      user: userObj,
+      userId: user._id.toString(), // Important: send user ID
+      token: user._id.toString(),  // For backward compatibility
+      message: 'Login successful'
+    });
+  } catch (err) {
+    console.error('[login] error', err);
+    return errorResponse(res, 500, 'Failed to login', err);
+  }
+});
 
 // Routes
 
@@ -422,7 +555,9 @@ app.get('/api/deposits', authenticateUser, async (req, res) => {
     const { userId, status, page = 1, limit = 20 } = req.query;
     const query = {};
     
-    if (userId) query.userId = String(userId);
+    // Use authenticated user's ID if not specified
+    const targetUserId = userId || req.userId;
+    if (targetUserId) query.userId = String(targetUserId);
     if (status) query.status = status;
     
     const pageNum = Math.max(1, parseInt(page));
@@ -538,7 +673,9 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
     const { userId, type, status, page = 1, limit = 20 } = req.query;
     const query = {};
     
-    if (userId) query.userId = String(userId);
+    // Use authenticated user's ID if not specified
+    const targetUserId = userId || req.userId;
+    if (targetUserId) query.userId = String(targetUserId);
     if (type) query.type = type;
     if (status) query.status = status;
     
@@ -1359,88 +1496,6 @@ app.post('/api/transactions/send', authenticateUser, async (req, res) => {
   }
 });
 
-// Authentication endpoints
-app.post('/api/auth/signup', async (req, res) => {
-  try {
-    let { email, password, name, phone, countryCode, countryName, countryFlag, dialCode } = req.body;
-    
-    console.log('[signup] attempt for', email);
-    
-    if (!email || !password || !name) {
-      console.log('[signup] missing fields for', email);
-      return errorResponse(res, 400, 'Missing required fields: email, password, name');
-    }
-
-    // Normalize email
-    email = String(email).toLowerCase().trim();
-
-    const existing = await User.findOne({ email });
-    if (existing) {
-      console.log('[signup] user already exists:', email);
-      return errorResponse(res, 409, 'User already exists');
-    }
-
-    const hashed = await bcrypt.hash(password, 10);
-    const user = new User({ 
-      email, 
-      password: hashed, 
-      name, 
-      phone, 
-      countryCode, 
-      countryName, 
-      countryFlag, 
-      dialCode 
-    });
-    
-    await user.save();
-    console.log('[signup] user created:', user.email);
-
-    const userObj = user.toObject();
-    delete userObj.password;
-
-    return successResponse(res, { user: userObj }, 201);
-  } catch (err) {
-    console.error('[signup] error', err);
-    return errorResponse(res, 500, 'Failed to create account', err);
-  }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return errorResponse(res, 400, 'Missing email or password');
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user) {
-      return errorResponse(res, 401, 'Invalid credentials');
-    }
-
-    if (user.suspended) {
-      return errorResponse(res, 403, 'Account suspended');
-    }
-
-    const ok = await bcrypt.compare(password, user.password);
-    if (!ok) {
-      return errorResponse(res, 401, 'Invalid credentials');
-    }
-
-    // Update last login
-    user.lastLogin = new Date();
-    await user.save();
-
-    const userObj = user.toObject();
-    delete userObj.password;
-
-    return successResponse(res, { user: userObj });
-  } catch (err) {
-    console.error('[login] error', err);
-    return errorResponse(res, 500, 'Failed to login', err);
-  }
-});
-
 // User management endpoints
 app.get('/api/users', requireAdmin, async (req, res) => {
   try {
@@ -1486,11 +1541,19 @@ app.get('/api/users/:id', authenticateUser, async (req, res) => {
   try {
     const { id } = req.params;
     
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    // Allow users to get their own profile or admins to get any profile
+    const targetId = id === 'me' ? req.userId : id;
+    
+    if (!mongoose.Types.ObjectId.isValid(targetId)) {
       return errorResponse(res, 400, 'Invalid user id');
     }
     
-    const user = await User.findById(id).select('-password -__v');
+    // Check permissions
+    if (targetId !== req.userId && req.user.role !== 'admin') {
+      return errorResponse(res, 403, 'You can only view your own profile');
+    }
+    
+    const user = await User.findById(targetId).select('-password -__v');
     if (!user) {
       return errorResponse(res, 404, 'User not found');
     }
@@ -1562,12 +1625,15 @@ app.put('/api/users/:id', authenticateUser, async (req, res) => {
     const { id } = req.params;
     const { name, phone, countryCode, countryName, countryFlag, dialCode, avatar } = req.body;
     
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    // Allow users to update their own profile or admins to update any profile
+    const targetId = id === 'me' ? req.userId : id;
+    
+    if (!mongoose.Types.ObjectId.isValid(targetId)) {
       return errorResponse(res, 400, 'Invalid user id');
     }
     
     // Check if user is updating their own profile
-    if (req.user._id.toString() !== id && req.user.role !== 'admin') {
+    if (targetId !== req.userId && req.user.role !== 'admin') {
       return errorResponse(res, 403, 'You can only update your own profile');
     }
     
@@ -1581,7 +1647,7 @@ app.put('/api/users/:id', authenticateUser, async (req, res) => {
     if (avatar !== undefined) updateData.avatar = avatar;
     
     const updated = await User.findByIdAndUpdate(
-      id,
+      targetId,
       { $set: updateData },
       { new: true }
     ).select('-password -__v');
@@ -1605,12 +1671,15 @@ app.put('/api/users/:id/password', authenticateUser, async (req, res) => {
     const { id } = req.params;
     const { currentPassword, newPassword } = req.body;
     
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    // Allow users to update their own password only
+    const targetId = id === 'me' ? req.userId : id;
+    
+    if (!mongoose.Types.ObjectId.isValid(targetId)) {
       return errorResponse(res, 400, 'Invalid user id');
     }
     
     // Check if user is updating their own password
-    if (req.user._id.toString() !== id) {
+    if (targetId !== req.userId) {
       return errorResponse(res, 403, 'You can only update your own password');
     }
     
@@ -1622,7 +1691,7 @@ app.put('/api/users/:id/password', authenticateUser, async (req, res) => {
       return errorResponse(res, 400, 'New password must be at least 6 characters');
     }
     
-    const user = await User.findById(id);
+    const user = await User.findById(targetId);
     if (!user) {
       return errorResponse(res, 404, 'User not found');
     }
@@ -1745,6 +1814,7 @@ const start = async () => {
       console.log(`🔗 Health check: http://localhost:${PORT}/health`);
       console.log(`🌐 CORS origins: ${allowedOrigins.join(', ')}`);
       console.log(`✅ CORS is ENABLED for: https://fipay.onrender.com`);
+      console.log(`🔐 Authentication accepts: x-user-id header, user-id header, Authorization Bearer token, or userId query parameter`);
     });
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB', err);
