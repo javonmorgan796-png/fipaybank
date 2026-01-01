@@ -9,7 +9,48 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 
-// Security middleware
+// CORS MUST COME FIRST - before any other middleware
+const allowedOrigins = [
+  'https://fipay.onrender.com',
+  'https://fipaybank.onrender.com',
+  'http://localhost:5173',
+  'http://localhost:8080',
+  'http://localhost:3000'
+];
+
+// Simple CORS configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
+    } else {
+      // For development, be more permissive
+      if (process.env.NODE_ENV === 'development') {
+        console.log('Development: Allowing origin', origin);
+        return callback(null, true);
+      }
+      console.error('CORS blocked:', origin);
+      return callback(new Error('Not allowed by CORS'), false);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin', 'x-user-id', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  optionsSuccessStatus: 200,
+  maxAge: 86400
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
+app.options('*', cors(corsOptions));
+
+// Security middleware (comes after CORS)
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   contentSecurityPolicy: {
@@ -25,7 +66,7 @@ app.use(helmet({
 // Rate limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200, // Limit each IP to 200 requests per windowMs
+  max: 200,
   message: 'Too many requests from this IP, please try again after 15 minutes',
   standardHeaders: true,
   legacyHeaders: false,
@@ -38,61 +79,15 @@ app.use('/api/', apiLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Enhanced CORS configuration for production
-const allowedOrigins = process.env.CLIENT_ORIGINS 
-  ? process.env.CLIENT_ORIGINS.split(',') 
-  : [
-      'https://fipay.onrender.com',
-      'https://fipaybank.onrender.com',
-      'http://localhost:5173',
-      'http://localhost:8080',
-      'http://localhost:3000'
-    ];
-
-console.log('Allowed CORS origins:', allowedOrigins);
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, postman)
-    if (!origin) {
-      return callback(null, true);
-    }
-    
-    // Check if origin is in allowed list
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    } else {
-      // For development, you might want to be more permissive
-      if (process.env.NODE_ENV === 'development') {
-        console.log('Development mode: Allowing origin', origin);
-        return callback(null, true);
-      }
-      
-      const msg = `The CORS policy for this site does not allow access from the specified origin: ${origin}`;
-      console.error('CORS blocked:', msg);
-      return callback(new Error(msg), false);
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin', 'X-Requested-With', 'Accept'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range'],
-  optionsSuccessStatus: 200,
-  maxAge: 86400 // 24 hours
-};
-
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
-
-// Health check endpoint
+// Health check endpoint (should work without authentication)
 app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    cors: 'enabled',
+    allowedOrigins: allowedOrigins
   });
 });
 
@@ -103,7 +98,22 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     status: 'running',
     environment: process.env.NODE_ENV || 'development',
-    docs: '/api-docs'
+    docs: '/api-docs',
+    cors: {
+      enabled: true,
+      origins: allowedOrigins
+    }
+  });
+});
+
+// Test CORS endpoint - ADD THIS BEFORE ALL OTHER ROUTES
+app.get('/api/test-cors', (req, res) => {
+  res.json({
+    success: true,
+    message: 'CORS is working correctly!',
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString(),
+    cors: '✅ Enabled for your origin'
   });
 });
 
@@ -1734,6 +1744,7 @@ const start = async () => {
       console.log(`🚀 Server listening on port ${PORT}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/health`);
       console.log(`🌐 CORS origins: ${allowedOrigins.join(', ')}`);
+      console.log(`✅ CORS is ENABLED for: https://fipay.onrender.com`);
     });
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB', err);
