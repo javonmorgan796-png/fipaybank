@@ -143,6 +143,8 @@ const userSchema = new Schema({
   avatar: { type: String, default: '' },
   balance: { type: Number, default: 0.0, min: 0 },
   suspended: { type: Boolean, default: false },
+  suspensionReason: { type: String, default: '' },
+  suspensionDate: { type: Date },
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   lastLogin: { type: Date },
   emailVerified: { type: Boolean, default: false }
@@ -215,7 +217,8 @@ const transactionSchema = new Schema({
   date: { type: Date, default: Date.now },
   status: { type: String, enum: ['pending', 'completed', 'failed', 'cancelled'], default: 'completed' },
   reference: { type: String, default: '' },
-  description: { type: String, default: '' }
+  description: { type: String, default: '' },
+  depositId: { type: String, default: '' } // Link to deposit
 }, { 
   timestamps: true,
   toJSON: {
@@ -330,7 +333,7 @@ const successResponse = (res, data = {}, status = 200) => {
   });
 };
 
-// FIXED: Authentication middleware (more flexible)
+// Authentication middleware (more flexible)
 const authenticateUser = async (req, res, next) => {
   try {
     // Try multiple ways to get user ID
@@ -369,7 +372,7 @@ const authenticateUser = async (req, res, next) => {
 
     if (user.suspended) {
       console.log('[AUTH] User suspended:', userId);
-      return errorResponse(res, 403, 'Account suspended');
+      return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
     }
 
     console.log('[AUTH] User authenticated:', user.email);
@@ -406,7 +409,9 @@ app.get('/api/auth/test', authenticateUser, async (req, res) => {
     user: {
       id: req.user._id,
       email: req.user.email,
-      name: req.user.name
+      name: req.user.name,
+      balance: req.user.balance,
+      suspended: req.user.suspended
     },
     authInfo: {
       method: 'authenticated endpoint',
@@ -475,7 +480,8 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     if (user.suspended) {
-      return errorResponse(res, 403, 'Account suspended');
+      console.log('[login] Attempt by suspended user:', email);
+      return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
     }
 
     const ok = await bcrypt.compare(password, user.password);
@@ -529,7 +535,7 @@ app.post('/api/deposits', authenticateUser, async (req, res) => {
     
     await deposit.save();
     
-    // Create transaction record
+    // Create transaction record (FIXED: include depositId)
     const transaction = new Transaction({
       userId,
       type: 'deposit',
@@ -538,7 +544,8 @@ app.post('/api/deposits', authenticateUser, async (req, res) => {
       crypto,
       symbol,
       description: `Deposit ${crypto} ${amount}`,
-      reference: deposit._id.toString()
+      reference: deposit._id.toString(),
+      depositId: deposit._id.toString() // Link to deposit
     });
     
     await transaction.save();
@@ -615,10 +622,13 @@ app.put('/api/deposits/:id/approve', requireAdmin, async (req, res) => {
         await user.save({ session });
       }
 
-      // Update transaction status
+      // Update transaction status (FIXED: include depositId)
       await Transaction.findOneAndUpdate(
-        { reference: id, type: 'deposit' },
-        { status: 'completed' },
+        { depositId: id, type: 'deposit' },
+        { 
+          status: 'completed',
+          description: `Deposit ${deposit.crypto} ${deposit.amount} approved`
+        },
         { session }
       );
 
@@ -655,10 +665,13 @@ app.put('/api/deposits/:id/reject', requireAdmin, async (req, res) => {
     deposit.notes = notes || deposit.notes;
     await deposit.save();
 
-    // Update transaction status
+    // Update transaction status (FIXED: include depositId)
     await Transaction.findOneAndUpdate(
-      { reference: id, type: 'deposit' },
-      { status: 'failed' }
+      { depositId: id, type: 'deposit' },
+      { 
+        status: 'failed',
+        description: `Deposit ${deposit.crypto} ${deposit.amount} rejected`
+      }
     );
 
     return successResponse(res, { deposit });
@@ -667,10 +680,10 @@ app.put('/api/deposits/:id/reject', requireAdmin, async (req, res) => {
   }
 });
 
-// Get transactions (by userId)
+// Get transactions (by userId) - FIXED: includes deposits
 app.get('/api/transactions', authenticateUser, async (req, res) => {
   try {
-    const { userId, type, status, page = 1, limit = 20 } = req.query;
+    const { userId, type, status, page = 1, limit = 50, includeDeposits = 'true' } = req.query;
     const query = {};
     
     // Use authenticated user's ID if not specified
@@ -692,17 +705,98 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
       Transaction.countDocuments(query)
     ]);
     
+    // If includeDeposits is true, get deposits and merge them
+    let allTransactions = [...transactions];
+    
+    if (includeDeposits === 'true' && (!type || type === 'deposit')) {
+      const depositQuery = { userId: targetUserId };
+      if (status) {
+        // Map transaction status to deposit status
+        const statusMap = {
+          'completed': 'approved',
+          'failed': 'rejected',
+          'pending': 'pending',
+          'cancelled': 'rejected'
+        };
+        depositQuery.status = statusMap[status] || status;
+      }
+      
+      const deposits = await Deposit.find(depositQuery)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean();
+      
+      // Convert deposits to transaction format for frontend
+      const depositTransactions = deposits.map(deposit => ({
+        _id: deposit._id,
+        userId: deposit.userId,
+        type: 'deposit',
+        amount: deposit.amount,
+        crypto: deposit.crypto,
+        symbol: deposit.symbol,
+        date: deposit.date || deposit.createdAt,
+        status: deposit.status === 'approved' ? 'completed' : 
+                deposit.status === 'rejected' ? 'failed' : 'pending',
+        description: `Deposit ${deposit.crypto} ${deposit.amount}`,
+        createdAt: deposit.createdAt,
+        updatedAt: deposit.updatedAt,
+        isDeposit: true,
+        depositDetails: {
+          cryptoAmount: deposit.cryptoAmount,
+          address: deposit.address,
+          transactionHash: deposit.transactionHash,
+          notes: deposit.notes
+        }
+      }));
+      
+      allTransactions = [...depositTransactions, ...transactions];
+      // Sort by date (newest first)
+      allTransactions.sort((a, b) => new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date));
+    }
+    
     return successResponse(res, { 
-      transactions, 
+      transactions: allTransactions,
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total,
+        total: total + (includeDeposits === 'true' ? await Deposit.countDocuments({ userId: targetUserId }) : 0),
         pages: Math.ceil(total / limitNum)
       }
     });
   } catch (err) {
+    console.error('[transactions] error:', err);
     return errorResponse(res, 500, 'Failed to fetch transactions', err);
+  }
+});
+
+// Get user summary (balance, transaction counts, etc.)
+app.get('/api/user-summary', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.userId;
+    
+    const [transactionsCount, depositsCount, pendingDeposits, user] = await Promise.all([
+      Transaction.countDocuments({ userId }),
+      Deposit.countDocuments({ userId }),
+      Deposit.countDocuments({ userId, status: 'pending' }),
+      User.findById(userId).select('balance name email')
+    ]);
+    
+    return successResponse(res, {
+      summary: {
+        userId,
+        name: user.name,
+        email: user.email,
+        balance: user.balance || 0,
+        totalTransactions: transactionsCount,
+        totalDeposits: depositsCount,
+        pendingDeposits: pendingDeposits,
+        accountStatus: user.suspended ? 'suspended' : 'active'
+      }
+    });
+  } catch (err) {
+    console.error('[user-summary] error:', err);
+    return errorResponse(res, 500, 'Failed to fetch user summary', err);
   }
 });
 
@@ -1600,7 +1694,8 @@ app.put('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
       { 
         $set: { 
           suspended: desired,
-          ...(reason && { suspensionReason: reason })
+          suspensionReason: reason || '',
+          ...(desired && { suspensionDate: new Date() })
         } 
       },
       { new: true }
@@ -1815,6 +1910,8 @@ const start = async () => {
       console.log(`🌐 CORS origins: ${allowedOrigins.join(', ')}`);
       console.log(`✅ CORS is ENABLED for: https://fipay.onrender.com`);
       console.log(`🔐 Authentication accepts: x-user-id header, user-id header, Authorization Bearer token, or userId query parameter`);
+      console.log(`💰 Deposits now included in transactions by default`);
+      console.log(`🚫 Suspended users get proper error messages`);
     });
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB', err);
