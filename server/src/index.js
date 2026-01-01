@@ -74,6 +74,10 @@ const corsOptions = {
       return callback(new Error(msg), false);
     }
   },
+ // SIMPLIFIED CORS - Replace lines 45-96 with this:
+
+const corsOptions = {
+  origin: ['https://fipay.onrender.com', 'https://fipaybank.onrender.com'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-admin', 'X-Requested-With', 'Accept'],
