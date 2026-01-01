@@ -43,11 +43,10 @@ const allowedOrigins = process.env.CLIENT_ORIGINS
   ? process.env.CLIENT_ORIGINS.split(',') 
   : [
       'https://fipay.onrender.com',
-      'https://fipaybank.onrender.com'
-      // 'http://localhost:5173',
-      // 'http://localhost:8080',
-      // 'http://localhost:3000' 
-      // Keep existing localhost:3000 if you still need it
+      'https://fipaybank.onrender.com',
+      'http://localhost:5173',
+      'http://localhost:8080',
+      'http://localhost:3000'
     ];
 
 console.log('Allowed CORS origins:', allowedOrigins);
@@ -74,10 +73,6 @@ const corsOptions = {
       return callback(new Error(msg), false);
     }
   },
- // SIMPLIFIED CORS - Replace lines 45-96 with this:
-
-const corsOptions = {
-  origin: ['https://fipay.onrender.com', 'https://fipaybank.onrender.com'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-admin', 'X-Requested-With', 'Accept'],
