@@ -8,7 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect } from "react";
 
-const ADMIN_EMAIL = "fipaybank@gmail.com"; // 🔴 change to your real admin email
+const ADMIN_EMAIL = "javonmorgan796@gmail.com"; // 🔴 change to your real admin email
 
 const Home = () => {
   const { user, isLoading, updateUser } = useAuth();
