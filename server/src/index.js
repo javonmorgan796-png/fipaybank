@@ -333,7 +333,7 @@ const successResponse = (res, data = {}, status = 200) => {
   });
 };
 
-// Authentication middleware (more flexible)
+// Authentication middleware (more flexible - ALLOWS SUSPENDED USERS)
 const authenticateUser = async (req, res, next) => {
   try {
     // Try multiple ways to get user ID
@@ -370,12 +370,13 @@ const authenticateUser = async (req, res, next) => {
       return errorResponse(res, 404, 'User not found');
     }
 
-    if (user.suspended) {
-      console.log('[AUTH] User suspended:', userId);
-      return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
-    }
+    // REMOVED: Suspension check - allow suspended users to authenticate
+    // if (user.suspended) {
+    //   console.log('[AUTH] User suspended:', userId);
+    //   return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
+    // }
 
-    console.log('[AUTH] User authenticated:', user.email);
+    console.log('[AUTH] User authenticated:', user.email, user.suspended ? '(SUSPENDED)' : '');
     req.user = user;
     req.userId = userId;
     next();
@@ -383,6 +384,16 @@ const authenticateUser = async (req, res, next) => {
     console.error('[AUTH] Error:', error);
     return errorResponse(res, 500, 'Authentication error', error);
   }
+};
+
+// Middleware to restrict actions for suspended users
+const restrictSuspendedUsers = (req, res, next) => {
+  if (req.user.suspended) {
+    return errorResponse(res, 403, 
+      `Account suspended. ${req.user.suspensionReason ? 'Reason: ' + req.user.suspensionReason : 'Contact support for assistance.'}`
+    );
+  }
+  next();
 };
 
 // Admin middleware
@@ -405,13 +416,14 @@ const requireAdmin = async (req, res, next) => {
 // Test authentication endpoint
 app.get('/api/auth/test', authenticateUser, async (req, res) => {
   return successResponse(res, {
-    message: 'Authentication successful!',
+    message: req.user.suspended ? 'Authentication successful (Account is SUSPENDED)' : 'Authentication successful!',
     user: {
       id: req.user._id,
       email: req.user.email,
       name: req.user.name,
       balance: req.user.balance,
-      suspended: req.user.suspended
+      suspended: req.user.suspended,
+      suspensionReason: req.user.suspensionReason
     },
     authInfo: {
       method: 'authenticated endpoint',
@@ -479,10 +491,11 @@ app.post('/api/auth/login', async (req, res) => {
       return errorResponse(res, 401, 'Invalid credentials');
     }
 
-    if (user.suspended) {
-      console.log('[login] Attempt by suspended user:', email);
-      return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
-    }
+    // REMOVED: Suspension check - allow suspended users to login
+    // if (user.suspended) {
+    //   console.log('[login] Attempt by suspended user:', email);
+    //   return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
+    // }
 
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) {
@@ -501,7 +514,7 @@ app.post('/api/auth/login', async (req, res) => {
       user: userObj,
       userId: user._id.toString(), // Important: send user ID
       token: user._id.toString(),  // For backward compatibility
-      message: 'Login successful'
+      message: user.suspended ? 'Login successful (Account is SUSPENDED)' : 'Login successful'
     });
   } catch (err) {
     console.error('[login] error', err);
@@ -511,8 +524,8 @@ app.post('/api/auth/login', async (req, res) => {
 
 // Routes
 
-// Create deposit
-app.post('/api/deposits', authenticateUser, async (req, res) => {
+// Create deposit (restricted for suspended users)
+app.post('/api/deposits', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   try {
     const { userId, userEmail, userName, crypto, symbol, amount, cryptoAmount, address, date, notes } = req.body;
     
@@ -556,7 +569,7 @@ app.post('/api/deposits', authenticateUser, async (req, res) => {
   }
 });
 
-// Get deposits (all or by userId)
+// Get deposits (all or by userId) - ALLOW SUSPENDED USERS TO VIEW
 app.get('/api/deposits', authenticateUser, async (req, res) => {
   try {
     const { userId, status, page = 1, limit = 20 } = req.query;
@@ -680,34 +693,36 @@ app.put('/api/deposits/:id/reject', requireAdmin, async (req, res) => {
   }
 });
 
-// Get transactions (by userId) - FIXED: includes deposits
+// Get transactions (by userId) - FIXED: includes deposits properly
 app.get('/api/transactions', authenticateUser, async (req, res) => {
   try {
     const { userId, type, status, page = 1, limit = 50, includeDeposits = 'true' } = req.query;
-    const query = {};
     
     // Use authenticated user's ID if not specified
     const targetUserId = userId || req.userId;
-    if (targetUserId) query.userId = String(targetUserId);
-    if (type) query.type = type;
-    if (status) query.status = status;
     
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
     
-    const [transactions, total] = await Promise.all([
-      Transaction.find(query)
+    // Get regular transactions
+    const transactionQuery = { userId: targetUserId };
+    if (type && type !== 'deposit') transactionQuery.type = type;
+    if (status) transactionQuery.status = status;
+    
+    const [transactions, transactionsTotal] = await Promise.all([
+      Transaction.find(transactionQuery)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .lean(),
-      Transaction.countDocuments(query)
+      Transaction.countDocuments(transactionQuery)
     ]);
     
-    // If includeDeposits is true, get deposits and merge them
     let allTransactions = [...transactions];
+    let totalCount = transactionsTotal;
     
+    // If includeDeposits is true, get deposits and merge them
     if (includeDeposits === 'true' && (!type || type === 'deposit')) {
       const depositQuery = { userId: targetUserId };
       if (status) {
@@ -718,14 +733,19 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
           'pending': 'pending',
           'cancelled': 'rejected'
         };
-        depositQuery.status = statusMap[status] || status;
+        if (statusMap[status]) {
+          depositQuery.status = statusMap[status];
+        }
       }
       
-      const deposits = await Deposit.find(depositQuery)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean();
+      const [deposits, depositsTotal] = await Promise.all([
+        Deposit.find(depositQuery)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .lean(),
+        Deposit.countDocuments(depositQuery)
+      ]);
       
       // Convert deposits to transaction format for frontend
       const depositTransactions = deposits.map(deposit => ({
@@ -746,13 +766,19 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
           cryptoAmount: deposit.cryptoAmount,
           address: deposit.address,
           transactionHash: deposit.transactionHash,
-          notes: deposit.notes
+          notes: deposit.notes,
+          status: deposit.status
         }
       }));
       
+      // Combine and sort
       allTransactions = [...depositTransactions, ...transactions];
-      // Sort by date (newest first)
       allTransactions.sort((a, b) => new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date));
+      
+      // Apply pagination after sorting
+      allTransactions = allTransactions.slice(0, limitNum);
+      
+      totalCount = transactionsTotal + depositsTotal;
     }
     
     return successResponse(res, { 
@@ -760,13 +786,69 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total: total + (includeDeposits === 'true' ? await Deposit.countDocuments({ userId: targetUserId }) : 0),
-        pages: Math.ceil(total / limitNum)
+        total: totalCount,
+        pages: Math.ceil(totalCount / limitNum)
       }
     });
   } catch (err) {
     console.error('[transactions] error:', err);
     return errorResponse(res, 500, 'Failed to fetch transactions', err);
+  }
+});
+
+// Get all user data in one endpoint (transactions + deposits)
+app.get('/api/user-data', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.userId;
+    
+    const [user, transactions, deposits] = await Promise.all([
+      User.findById(userId).select('-password -__v'),
+      Transaction.find({ userId }).sort({ createdAt: -1 }).limit(50).lean(),
+      Deposit.find({ userId }).sort({ createdAt: -1 }).limit(50).lean()
+    ]);
+    
+    // Format deposits as transactions for consistency
+    const depositTransactions = deposits.map(deposit => ({
+      _id: deposit._id,
+      userId: deposit.userId,
+      type: 'deposit',
+      amount: deposit.amount,
+      crypto: deposit.crypto,
+      symbol: deposit.symbol,
+      date: deposit.date || deposit.createdAt,
+      status: deposit.status === 'approved' ? 'completed' : 
+              deposit.status === 'rejected' ? 'failed' : 'pending',
+      description: `Deposit ${deposit.crypto} ${deposit.amount}`,
+      createdAt: deposit.createdAt,
+      updatedAt: deposit.updatedAt,
+      isDeposit: true,
+      depositDetails: {
+        cryptoAmount: deposit.cryptoAmount,
+        address: deposit.address,
+        transactionHash: deposit.transactionHash,
+        notes: deposit.notes,
+        status: deposit.status
+      }
+    }));
+    
+    // Combine and sort
+    const allTransactions = [...depositTransactions, ...transactions];
+    allTransactions.sort((a, b) => new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date));
+    
+    return successResponse(res, {
+      user,
+      transactions: allTransactions,
+      deposits,
+      summary: {
+        totalBalance: user.balance || 0,
+        totalTransactions: transactions.length + deposits.length,
+        pendingDeposits: deposits.filter(d => d.status === 'pending').length,
+        accountStatus: user.suspended ? 'suspended' : 'active'
+      }
+    });
+  } catch (err) {
+    console.error('[user-data] error:', err);
+    return errorResponse(res, 500, 'Failed to fetch user data', err);
   }
 });
 
@@ -779,7 +861,7 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
       Transaction.countDocuments({ userId }),
       Deposit.countDocuments({ userId }),
       Deposit.countDocuments({ userId, status: 'pending' }),
-      User.findById(userId).select('balance name email')
+      User.findById(userId).select('balance name email suspended suspensionReason')
     ]);
     
     return successResponse(res, {
@@ -791,7 +873,8 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
         totalTransactions: transactionsCount,
         totalDeposits: depositsCount,
         pendingDeposits: pendingDeposits,
-        accountStatus: user.suspended ? 'suspended' : 'active'
+        accountStatus: user.suspended ? 'suspended' : 'active',
+        suspensionReason: user.suspensionReason
       }
     });
   } catch (err) {
@@ -800,8 +883,8 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
   }
 });
 
-// Create pending transaction
-app.post('/api/pending', authenticateUser, async (req, res) => {
+// Create pending transaction (restricted for suspended users)
+app.post('/api/pending', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   try {
     let { senderId, senderEmail, recipientEmail, amount, message } = req.body;
     
@@ -867,7 +950,7 @@ app.get('/api/pending', authenticateUser, async (req, res) => {
 });
 
 // Pending Recipient endpoints
-app.post('/api/pending-recipient', authenticateUser, async (req, res) => {
+app.post('/api/pending-recipient', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   try {
     let { email, name, createdBy } = req.body;
     
@@ -1425,8 +1508,8 @@ app.put('/api/admin/pending/:id/cancel', requireAdmin, async (req, res) => {
   }
 });
 
-// Send money (atomic balance update + create transactions)
-app.post('/api/transactions/send', authenticateUser, async (req, res) => {
+// Send money (atomic balance update + create transactions) - RESTRICTED FOR SUSPENDED USERS
+app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -1535,9 +1618,10 @@ app.post('/api/transactions/send', authenticateUser, async (req, res) => {
         throw new Error('Sender not found');
       }
 
-      if (sender.suspended === true) {
-        throw new Error('Sender account is suspended');
-      }
+      // REMOVED: Suspension check - handled by restrictSuspendedUsers middleware
+      // if (sender.suspended === true) {
+      //   throw new Error('Sender account is suspended');
+      // }
 
       // If using wallet balance, ensure sender has sufficient funds before creating pending
       if (paymentMethod !== 'card' && (sender.balance || 0) < amount) {
@@ -1761,7 +1845,7 @@ app.put('/api/users/:id', authenticateUser, async (req, res) => {
 });
 
 // Change password
-app.put('/api/users/:id/password', authenticateUser, async (req, res) => {
+app.put('/api/users/:id/password', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   try {
     const { id } = req.params;
     const { currentPassword, newPassword } = req.body;
@@ -1911,7 +1995,8 @@ const start = async () => {
       console.log(`✅ CORS is ENABLED for: https://fipay.onrender.com`);
       console.log(`🔐 Authentication accepts: x-user-id header, user-id header, Authorization Bearer token, or userId query parameter`);
       console.log(`💰 Deposits now included in transactions by default`);
-      console.log(`🚫 Suspended users get proper error messages`);
+      console.log(`🔓 Suspended users can now login and view their data`);
+      console.log(`🚫 Suspended users are restricted from making transactions`);
     });
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB', err);
