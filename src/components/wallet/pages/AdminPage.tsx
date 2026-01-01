@@ -37,7 +37,7 @@ const AdminPage = () => {
   const [amountFilter, setAmountFilter] = useState<string>("all");
 
   useEffect(() => {
-    const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:5000';
+    const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
     const fetchUsers = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/users`, { headers: { 'Accept': 'application/json' } });
