@@ -90,7 +90,7 @@ const AdminPage = () => {
   const [pendingRecipients, setPendingRecipients] = useState<any[]>([]);
 
   useEffect(() => {
-    const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000';
+    const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
     const fetchPendingTransfers = async () => {
       try {
         const [res1, res2] = await Promise.all([
