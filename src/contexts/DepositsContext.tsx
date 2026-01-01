@@ -27,7 +27,7 @@ interface DepositsContextType {
 
 const DepositsContext = createContext<DepositsContextType | undefined>(undefined);
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:5000';
+const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
 const ADMIN_EMAIL = 'javonmorgan796@gmail.com';
 
 export const DepositsProvider = ({ children }: { children: ReactNode }) => {
