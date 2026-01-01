@@ -341,7 +341,7 @@ const AdminPage = () => {
                       <Button
                         onClick={async () => {
                           try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000';
+                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
                             const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-admin': 'admin' } });
                             const data = await res.json();
                             if (res.ok) {
@@ -361,7 +361,7 @@ const AdminPage = () => {
                       <Button
                         onClick={async () => {
                           try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000';
+                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
                             const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { method: 'PUT', headers: { 'Content-Type': 'application/json' } });
                             const data = await res.json();
                             if (res.ok) {
@@ -399,7 +399,7 @@ const AdminPage = () => {
                       <Button
                         onClick={async () => {
                           try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000';
+                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
                             const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/approve`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-admin': 'admin' } });
                             const data = await res.json();
                             if (res.ok) {
@@ -418,7 +418,7 @@ const AdminPage = () => {
                       <Button
                         onClick={async () => {
                           try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000';
+                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
                             const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/reject`, { method: 'PUT', headers: { 'Content-Type': 'application/json' } });
                             const data = await res.json();
                             if (res.ok) {
@@ -487,7 +487,7 @@ const AdminPage = () => {
                           className="h-8"
                           onClick={async () => {
                             try {
-                              const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:5000';
+                              const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
                               const res = await fetch(`${API_BASE}/api/admin/users/${u.id}/suspend`, {
                                 method: 'PUT',
                                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-admin': 'admin' },
