@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
-import { ArrowLeft, Users, DollarSign, Clock, Check, X, Search, Shield, ChevronLeft, ChevronRight, Filter, RefreshCw, AlertCircle, UserPlus, UserMinus } from "lucide-react";
+import { ArrowLeft, Users, DollarSign, Clock, Check, X, Search, Shield, ChevronLeft, ChevronRight, Filter, RefreshCw, AlertCircle, UserPlus, UserMinus, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -22,6 +22,16 @@ interface UserData {
   status?: string;
 }
 
+interface PendingRecipient {
+  _id: string;
+  email: string;
+  name: string;
+  status: string;
+  createdAt: string;
+  userId?: string;
+  userEmail?: string;
+}
+
 const AdminPage = () => {
   const { user, isLoading } = useAuth();
   const { allDeposits, approveDeposit, rejectDeposit } = useDeposits();
@@ -37,19 +47,19 @@ const AdminPage = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [amountFilter, setAmountFilter] = useState<string>("all");
   const [pendingTransfers, setPendingTransfers] = useState<any[]>([]);
-  const [pendingRecipients, setPendingRecipients] = useState<any[]>([]);
+  const [pendingRecipients, setPendingRecipients] = useState<PendingRecipient[]>([]);
   const [pendingUsers, setPendingUsers] = useState<UserData[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [activeTab, setActiveTab] = useState("deposits");
  
   // Helper function to get headers
   const getHeaders = (needsUserAuth = false) => {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
-      'x-admin': 'admin' // Always send admin header
+      'x-admin': 'admin'
     };
     
-    // Get user token from localStorage (common place to store it)
     if (needsUserAuth) {
       const token = localStorage.getItem('token') || 
                     localStorage.getItem('authToken') ||
@@ -57,8 +67,6 @@ const AdminPage = () => {
       
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
-      } else {
-        console.warn('No user token found for authenticated endpoint');
       }
     }
     
@@ -72,50 +80,32 @@ const AdminPage = () => {
     const fetchAllUsers = async () => {
       setIsLoadingUsers(true);
       try {
-        console.log("🔍 Fetching users from:", `${API_BASE}/api/users`);
-        
-        // Try with admin header only first
         const res = await fetch(`${API_BASE}/api/users`, { 
-          headers: getHeaders(false) // false = admin header only
+          headers: getHeaders(false)
         });
         
-        console.log("📊 Users API status:", res.status);
-        
-        // If 403, try with user auth too
-        if (res.status === 403 || res.status === 401) {
-          console.log("🔄 Trying with user authentication...");
+        if (res.ok) {
+          const data = await res.json();
+          processUserData(data);
+        } else if (res.status === 403 || res.status === 401) {
           const resWithAuth = await fetch(`${API_BASE}/api/users`, { 
-            headers: getHeaders(true) // true = admin + user auth
+            headers: getHeaders(true)
           });
           
           if (resWithAuth.ok) {
             const data = await resWithAuth.json();
             processUserData(data);
-          } else {
-            throw new Error(`Failed to fetch users: ${resWithAuth.status}`);
           }
-        } else if (res.ok) {
-          const data = await res.json();
-          processUserData(data);
-        } else {
-          throw new Error(`Failed to fetch users: ${res.status}`);
         }
         
       } catch (err) {
         console.error('fetch users error', err);
-        toast({
-          title: "Error",
-          description: "Failed to load users",
-          variant: "destructive"
-        });
       } finally {
         setIsLoadingUsers(false);
       }
     };
     
     const processUserData = (data: any) => {
-      console.log("📊 Users API response:", data);
-      
       let userList: UserData[] = [];
       let pendingUserList: UserData[] = [];
       
@@ -136,26 +126,8 @@ const AdminPage = () => {
             userList.push(userObj);
           }
         });
-      } else if (Array.isArray(data)) {
-        data.forEach((u: any) => {
-          const userObj: UserData = {
-            email: u.email || '',
-            name: u.name || 'Unknown',
-            balance: u.balance || 0,
-            id: u._id || u.id || '',
-            suspended: u.suspended || false,
-            status: u.status || 'approved'
-          };
-          
-          if (u.status === 'pending') {
-            pendingUserList.push(userObj);
-          } else {
-            userList.push(userObj);
-          }
-        });
       }
       
-      console.log(`✅ Approved users: ${userList.length}, Pending users: ${pendingUserList.length}`);
       setUsers(userList);
       setPendingUsers(pendingUserList);
     };
@@ -163,69 +135,107 @@ const AdminPage = () => {
     fetchAllUsers();
   }, []);
 
-  // Also fetch from specific pending users endpoint
+  // Fetch pending recipients - FIXED THIS FUNCTION
   useEffect(() => {
-    const fetchPendingUsers = async () => {
+    const fetchPendingRecipients = async () => {
       try {
         const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
         
-        // Try common pending user endpoints
+        console.log("🔄 Fetching pending recipients...");
+        
+        // Try different endpoints for pending recipients
         const endpoints = [
-          '/api/admin/pending-users',
-          '/api/users/pending',
-          '/api/pending-users',
-          '/api/admin/pendingUsers'
+          '/api/admin/pending-recipient',
+          '/api/admin/pending-recipients',
+          '/api/pending-recipients',
+          '/api/pending/recipients',
+          '/api/recipients/pending'
         ];
         
         for (const endpoint of endpoints) {
           try {
+            console.log(`🔍 Trying endpoint: ${endpoint}`);
             const res = await fetch(`${API_BASE}${endpoint}`, {
               headers: getHeaders(false)
             });
             
+            console.log(`📊 Response status for ${endpoint}:`, res.status);
+            
             if (res.ok) {
               const data = await res.json();
-              console.log(`✅ Found pending users at ${endpoint}:`, data);
+              console.log(`✅ Found pending recipients at ${endpoint}:`, data);
               
-              if (Array.isArray(data.users) || Array.isArray(data.pendingUsers) || Array.isArray(data)) {
-                const usersArray = Array.isArray(data.users) ? data.users : 
-                                 Array.isArray(data.pendingUsers) ? data.pendingUsers : 
-                                 data;
-                
-                const newPendingUsers = usersArray.map((u: any) => ({
-                  email: u.email || '',
-                  name: u.name || 'Unknown',
-                  balance: 0,
-                  id: u._id || u.id || '',
-                  suspended: false,
-                  status: 'pending'
-                }));
-                
-                setPendingUsers(prev => {
-                  // Avoid duplicates
-                  const existingIds = new Set(prev.map(u => u.id));
-                  const uniqueNewUsers = newPendingUsers.filter((u: UserData) => !existingIds.has(u.id));
-                  return [...prev, ...uniqueNewUsers];
-                });
-                
-                toast({
-                  title: "Pending Users Found",
-                  description: `Found ${newPendingUsers.length} pending users`
-                });
-                
-                break;
+              // Handle different response structures
+              let recipientsArray: any[] = [];
+              
+              if (Array.isArray(data.pendingRecipients)) {
+                recipientsArray = data.pendingRecipients;
+              } else if (Array.isArray(data.recipients)) {
+                recipientsArray = data.recipients;
+              } else if (Array.isArray(data)) {
+                recipientsArray = data;
+              } else if (data.data && Array.isArray(data.data)) {
+                recipientsArray = data.data;
               }
+              
+              const formattedRecipients: PendingRecipient[] = recipientsArray.map((r: any) => ({
+                _id: r._id || r.id || Math.random().toString(),
+                email: r.email || r.userEmail || r.recipientEmail || 'Unknown',
+                name: r.name || r.userName || r.recipientName || 'Unknown User',
+                status: r.status || 'pending',
+                createdAt: r.createdAt || r.date || new Date().toISOString(),
+                userId: r.userId || r.user_id,
+                userEmail: r.userEmail
+              }));
+              
+              console.log(`✅ Formatted ${formattedRecipients.length} pending recipients`);
+              setPendingRecipients(formattedRecipients);
+              
+              if (formattedRecipients.length > 0) {
+                toast({
+                  title: "Pending Recipients Loaded",
+                  description: `Found ${formattedRecipients.length} pending recipients`
+                });
+              }
+              
+              break; // Stop trying other endpoints if this one worked
             }
           } catch (err) {
-            console.log(`Endpoint ${endpoint} not available or error:`, err);
+            console.log(`❌ Endpoint ${endpoint} failed:`, err);
           }
         }
       } catch (err) {
-        console.error('Error fetching pending users:', err);
+        console.error('❌ Error fetching pending recipients:', err);
       }
     };
     
-    fetchPendingUsers();
+    fetchPendingRecipients();
+  }, []);
+
+  // Fetch pending transfers
+  useEffect(() => {
+    const fetchPendingTransfers = async () => {
+      try {
+        const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+        
+        console.log("🔄 Fetching pending transfers...");
+        const res = await fetch(`${API_BASE}/api/admin/pending`, {
+          headers: getHeaders(false)
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          console.log("✅ Pending transfers data:", data);
+          setPendingTransfers(data.pendings || data.transfers || []);
+        } else {
+          console.warn("Failed to fetch pending transfers:", res.status);
+        }
+      } catch (err) {
+        console.error('fetch pending transfers error', err);
+      }
+    };
+    
+    fetchPendingTransfers();
   }, []);
 
   if (isLoading) {
@@ -247,39 +257,7 @@ const AdminPage = () => {
   const pendingDeposits = allDeposits.filter(d => d.status === 'pending');
   const processedDeposits = allDeposits.filter(d => d.status !== 'pending');
 
-  // Fetch pending transfers and recipients
-  useEffect(() => {
-    const fetchPendingItems = async () => {
-      try {
-        const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-        const [res1, res2] = await Promise.all([
-          fetch(`${API_BASE}/api/admin/pending`, { headers: getHeaders(false) }),
-          fetch(`${API_BASE}/api/admin/pending-recipient`, { headers: getHeaders(false) })
-        ]);
-        
-        if (res1.ok) {
-          const data = await res1.json();
-          setPendingTransfers(data.pendings || []);
-          console.log("Pending transfers:", data.pendings);
-        } else {
-          console.warn("Failed to fetch pending transfers:", res1.status);
-        }
-        
-        if (res2.ok) {
-          const data2 = await res2.json();
-          setPendingRecipients(data2.pendingRecipients || []);
-          console.log("Pending recipients:", data2.pendingRecipients);
-        } else {
-          console.warn("Failed to fetch pending recipients:", res2.status);
-        }
-      } catch (err) { 
-        console.error('fetch pending items error', err); 
-      }
-    };
-    
-    fetchPendingItems();
-  }, []);
-
+  // Rest of your existing code for filters, pagination, etc.
   // Apply filters to deposits
   const filterDeposits = (deposits: typeof allDeposits) => {
     return deposits.filter(d => {
@@ -342,18 +320,12 @@ const AdminPage = () => {
       const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
       const res = await fetch(`${API_BASE}/api/admin/users/${userId}/suspend`, {
         method: 'PUT',
-        headers: getHeaders(true), // Needs both admin and user auth
+        headers: getHeaders(true),
         body: JSON.stringify({ suspended: !currentSuspended })
       });
       
-      let data: any = null;
-      try {
-        data = await res.json();
-      } catch {
-        data = { error: 'Invalid response format' };
-      }
-      
-      if (res.ok && (data.user || data.success)) {
+      if (res.ok) {
+        const data = await res.json();
         setUsers(prev => prev.map(u => 
           u.id === userId ? { ...u, suspended: !currentSuspended } : u
         ));
@@ -361,9 +333,6 @@ const AdminPage = () => {
           title: currentSuspended ? 'User Unsuspended' : 'User Suspended',
           description: currentSuspended ? 'User can access the account.' : 'User access is blocked.'
         });
-      } else {
-        const message = data?.error || `Request failed (${res.status})`;
-        toast({ title: 'Error', description: message, variant: 'destructive' });
       }
     } catch (err) {
       console.error('suspend toggle error', err);
@@ -388,9 +357,6 @@ const AdminPage = () => {
           setUsers(prev => [...prev, { ...pendingUser, suspended: false }]);
         }
         toast({ title: "User Approved", description: `${userEmail} can now access the platform.` });
-      } else {
-        const errorText = await res.text();
-        toast({ title: 'Error', description: `Failed to approve user: ${errorText}`, variant: 'destructive' });
       }
     } catch (err) {
       console.error('approve user error', err);
@@ -409,12 +375,68 @@ const AdminPage = () => {
       if (res.ok) {
         setPendingUsers(prev => prev.filter(u => u.id !== pendingUserId));
         toast({ title: "User Rejected", description: `${userEmail} has been rejected.`, variant: "destructive" });
-      } else {
-        const errorText = await res.text();
-        toast({ title: 'Error', description: `Failed to reject user: ${errorText}`, variant: 'destructive' });
       }
     } catch (err) {
       console.error('reject user error', err);
+      toast({ title: 'Error', description: 'Network error', variant: 'destructive' });
+    }
+  };
+
+  // Handle pending recipient approval
+  const handleApproveRecipient = async (recipientId: string, email: string) => {
+    try {
+      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+      const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${recipientId}/approve`, {
+        method: 'PUT',
+        headers: getHeaders(true)
+      });
+      
+      if (res.ok) {
+        setPendingRecipients(prev => prev.filter(r => r._id !== recipientId));
+        toast({ 
+          title: 'Recipient Approved', 
+          description: `${email} has been approved as a recipient.` 
+        });
+      } else {
+        const error = await res.text();
+        toast({ 
+          title: 'Error', 
+          description: `Failed to approve: ${error}`, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (err) {
+      console.error('approve recipient error', err);
+      toast({ title: 'Error', description: 'Network error', variant: 'destructive' });
+    }
+  };
+
+  // Handle pending recipient rejection
+  const handleRejectRecipient = async (recipientId: string, email: string) => {
+    try {
+      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+      const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${recipientId}/reject`, {
+        method: 'PUT',
+        headers: getHeaders(true)
+      });
+      
+      if (res.ok) {
+        setPendingRecipients(prev => prev.filter(r => r._id !== recipientId));
+        toast({ 
+          title: 'Recipient Rejected', 
+          description: `${email} has been rejected as a recipient.`,
+          variant: 'destructive' 
+        });
+      } else {
+        const error = await res.text();
+        toast({ 
+          title: 'Error', 
+          description: `Failed to reject: ${error}`, 
+          variant: 'destructive' 
+        });
+      }
+    } catch (err) {
+      console.error('reject recipient error', err);
       toast({ title: 'Error', description: 'Network error', variant: 'destructive' });
     }
   };
@@ -450,6 +472,9 @@ const AdminPage = () => {
 
   const cryptoOptions = [...new Set(allDeposits.map(d => d.symbol))];
 
+  // Calculate total pending items for the deposits tab
+  const totalPendingItems = filteredPendingDeposits.length + pendingTransfers.length + pendingRecipients.length;
+
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-md mx-auto px-4 pb-24">
@@ -478,8 +503,8 @@ const AdminPage = () => {
           </div>
         </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-3 gap-3 mb-6">
+        {/* Stats Cards - Added pending recipients count */}
+        <div className="grid grid-cols-4 gap-3 mb-6">
           <div className="p-3 rounded-2xl bg-card border border-border animate-fade-in">
             <div className="flex items-center justify-center w-8 h-8 rounded-full bg-primary/10 mb-2">
               <Users className="w-4 h-4 text-primary" />
@@ -501,15 +526,22 @@ const AdminPage = () => {
             <p className="text-lg font-bold text-foreground">{pendingUsers.length}</p>
             <p className="text-xs text-muted-foreground">Pending Users</p>
           </div>
+          <div className="p-3 rounded-2xl bg-card border border-border animate-fade-in">
+            <div className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-500/10 mb-2">
+              <Mail className="w-4 h-4 text-blue-500" />
+            </div>
+            <p className="text-lg font-bold text-foreground">{pendingRecipients.length}</p>
+            <p className="text-xs text-muted-foreground">Pending Recipients</p>
+          </div>
         </div>
 
-        <Tabs defaultValue="pending-users" className="w-full">
+        <Tabs defaultValue="deposits" className="w-full" onValueChange={setActiveTab}>
           <TabsList className="w-full grid grid-cols-4 mb-4">
+            <TabsTrigger value="deposits" className="text-xs">
+              Pending Items ({totalPendingItems})
+            </TabsTrigger>
             <TabsTrigger value="pending-users" className="text-xs">
               Pending Users ({pendingUsers.length})
-            </TabsTrigger>
-            <TabsTrigger value="deposits" className="text-xs">
-              Pending Deposits ({filteredPendingDeposits.length})
             </TabsTrigger>
             <TabsTrigger value="users" className="text-xs">
               Active Users ({users.length})
@@ -518,6 +550,259 @@ const AdminPage = () => {
               History
             </TabsTrigger>
           </TabsList>
+
+          {/* DEPOSITS TAB - Now includes all pending items */}
+          <TabsContent value="deposits" className="space-y-4">
+            {/* Tabs within deposits for different types of pending items */}
+            <div className="flex border-b border-border mb-4">
+              <button
+                className={`px-4 py-2 text-sm font-medium ${activeTab === 'deposits' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground'}`}
+                onClick={() => setActiveTab('deposits')}
+              >
+                Deposits ({filteredPendingDeposits.length})
+              </button>
+              <button
+                className={`px-4 py-2 text-sm font-medium ${activeTab === 'transfers' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground'}`}
+                onClick={() => setActiveTab('transfers')}
+              >
+                Transfers ({pendingTransfers.length})
+              </button>
+              <button
+                className={`px-4 py-2 text-sm font-medium ${activeTab === 'recipients' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground'}`}
+                onClick={() => setActiveTab('recipients')}
+              >
+                Recipients ({pendingRecipients.length})
+              </button>
+            </div>
+
+            {/* Deposit Filters - Only show for deposits */}
+            {activeTab === 'deposits' && (
+              <div className="flex gap-2 mb-3">
+                <Select value={cryptoFilter} onValueChange={setCryptoFilter}>
+                  <SelectTrigger className="flex-1 h-9">
+                    <SelectValue placeholder="Crypto" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Crypto</SelectItem>
+                    {cryptoOptions.map(crypto => (
+                      <SelectItem key={crypto} value={crypto}>{crypto}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={amountFilter} onValueChange={setAmountFilter}>
+                  <SelectTrigger className="flex-1 h-9">
+                    <SelectValue placeholder="Amount" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Amounts</SelectItem>
+                    <SelectItem value="low">$0 - $100</SelectItem>
+                    <SelectItem value="medium">$100 - $1000</SelectItem>
+                    <SelectItem value="high">$1000+</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* PENDING DEPOSITS */}
+            {activeTab === 'deposits' && (
+              <>
+                {filteredPendingDeposits.length === 0 ? (
+                  <div className="text-center py-12 bg-card rounded-2xl border border-border">
+                    <DollarSign className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-sm text-muted-foreground">No pending deposits</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {paginatedPendingDeposits.map((deposit) => (
+                      <div
+                        key={deposit.id}
+                        className="p-4 rounded-2xl bg-card border border-border animate-fade-in"
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="font-semibold text-foreground text-sm">{deposit.userName}</p>
+                            <p className="text-xs text-muted-foreground">{deposit.userEmail}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-bold text-foreground">${deposit.amount.toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground">{deposit.cryptoAmount} {deposit.symbol}</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground mb-3">{formatDate(deposit.date)}</p>
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={() => handleApprove(deposit.id)}
+                            size="sm"
+                            className="flex-1 bg-green-500 hover:bg-green-600 h-9"
+                          >
+                            <Check className="w-4 h-4 mr-1" /> Approve
+                          </Button>
+                          <Button
+                            onClick={() => handleReject(deposit.id)}
+                            variant="destructive"
+                            size="sm"
+                            className="flex-1 h-9"
+                          >
+                            <X className="w-4 h-4 mr-1" /> Reject
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                    <PaginationControls
+                      currentPage={depositsPage}
+                      totalPages={getTotalPages(filteredPendingDeposits.length)}
+                      onPageChange={setDepositsPage}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* PENDING TRANSFERS */}
+            {activeTab === 'transfers' && (
+              <>
+                {pendingTransfers.length === 0 ? (
+                  <div className="text-center py-12 bg-card rounded-2xl border border-border">
+                    <RefreshCw className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-sm text-muted-foreground">No pending transfers</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {pendingTransfers.map((t) => (
+                      <div key={t._id} className="p-4 rounded-2xl bg-card border border-border animate-fade-in">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="font-semibold text-foreground text-sm">{t.senderEmail} → {t.recipientEmail}</p>
+                            <p className="text-xs text-muted-foreground">{t.message || ''}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-bold text-foreground">${t.amount?.toLocaleString() || '0'}</p>
+                            <p className="text-xs text-muted-foreground">{t.symbol || t.crypto || ''}</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground mb-3">{formatDate(t.createdAt)}</p>
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={async () => {
+                              try {
+                                const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
+                                const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { 
+                                  method: 'PUT', 
+                                  headers: getHeaders(true) 
+                                });
+                                const data = await res.json();
+                                if (res.ok) {
+                                  toast({ title: 'Transfer Approved', description: 'Transfer completed and balances updated.' });
+                                  setPendingTransfers(prev => prev.filter(p => p._id !== t._id));
+                                } else {
+                                  toast({ title: 'Error', description: data.error || 'Failed to approve', variant: 'destructive' });
+                                }
+                              } catch (err) { 
+                                console.error(err); 
+                                toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
+                              }
+                            }}
+                            size="sm"
+                            className="flex-1 bg-green-500 hover:bg-green-600 h-9"
+                          >
+                            <Check className="w-4 h-4 mr-1" /> Approve
+                          </Button>
+                          <Button
+                            onClick={async () => {
+                              try {
+                                const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
+                                const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { 
+                                  method: 'PUT', 
+                                  headers: getHeaders(true) 
+                                });
+                                const data = await res.json();
+                                if (res.ok) {
+                                  toast({ title: 'Transfer Cancelled', description: 'Transfer has been cancelled.', variant: 'destructive' });
+                                  setPendingTransfers(prev => prev.filter(p => p._id !== t._id));
+                                } else {
+                                  toast({ title: 'Error', description: data.error || 'Failed to cancel', variant: 'destructive' });
+                                }
+                              } catch (err) { 
+                                console.error(err); 
+                                toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
+                              }
+                            }}
+                            variant="destructive"
+                            size="sm"
+                            className="flex-1 h-9"
+                          >
+                            <X className="w-4 h-4 mr-1" /> Reject
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* PENDING RECIPIENTS - FIXED DISPLAY */}
+            {activeTab === 'recipients' && (
+              <>
+                {pendingRecipients.length === 0 ? (
+                  <div className="text-center py-12 bg-card rounded-2xl border border-border">
+                    <Mail className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-sm text-muted-foreground">No pending recipients</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Users who have requested to add recipients will appear here
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {pendingRecipients.map((recipient) => (
+                      <div key={recipient._id} className="p-4 rounded-2xl bg-card border border-blue-500/30 animate-fade-in">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                              <Mail className="w-5 h-5 text-blue-500" />
+                            </div>
+                            <div>
+                              <p className="font-semibold text-foreground text-sm">{recipient.name}</p>
+                              <p className="text-xs text-muted-foreground">{recipient.email}</p>
+                              {recipient.userEmail && (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Requested by: {recipient.userEmail}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs text-blue-500 font-medium">Status: {recipient.status}</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {formatDate(recipient.createdAt)}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex gap-2 mt-4">
+                          <Button
+                            onClick={() => handleApproveRecipient(recipient._id, recipient.email)}
+                            size="sm"
+                            className="flex-1 bg-green-500 hover:bg-green-600 h-9"
+                          >
+                            <Check className="w-4 h-4 mr-1" /> Approve Recipient
+                          </Button>
+                          <Button
+                            onClick={() => handleRejectRecipient(recipient._id, recipient.email)}
+                            variant="destructive"
+                            size="sm"
+                            className="flex-1 h-9"
+                          >
+                            <X className="w-4 h-4 mr-1" /> Reject
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </TabsContent>
 
           {/* PENDING USERS TAB */}
           <TabsContent value="pending-users" className="space-y-3">
@@ -530,7 +815,6 @@ const AdminPage = () => {
               <div className="text-center py-12 bg-card rounded-2xl border border-border">
                 <UserPlus className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">No pending user registrations</p>
-                <p className="text-xs text-muted-foreground mt-1">New user signups will appear here for approval</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -572,224 +856,6 @@ const AdminPage = () => {
             )}
           </TabsContent>
 
-          {/* DEPOSITS TAB */}
-          <TabsContent value="deposits" className="space-y-3">
-            {/* Deposit Filters */}
-            <div className="flex gap-2 mb-3">
-              <Select value={cryptoFilter} onValueChange={setCryptoFilter}>
-                <SelectTrigger className="flex-1 h-9">
-                  <SelectValue placeholder="Crypto" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Crypto</SelectItem>
-                  {cryptoOptions.map(crypto => (
-                    <SelectItem key={crypto} value={crypto}>{crypto}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={amountFilter} onValueChange={setAmountFilter}>
-                <SelectTrigger className="flex-1 h-9">
-                  <SelectValue placeholder="Amount" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Amounts</SelectItem>
-                  <SelectItem value="low">$0 - $100</SelectItem>
-                  <SelectItem value="medium">$100 - $1000</SelectItem>
-                  <SelectItem value="high">$1000+</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {paginatedPendingDeposits.length === 0 && pendingTransfers.length === 0 && pendingRecipients.length === 0 ? (
-              <div className="text-center py-12 bg-card rounded-2xl border border-border">
-                <Clock className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-                <p className="text-sm text-muted-foreground">No pending items</p>
-              </div>
-            ) : (
-              <>
-                {paginatedPendingDeposits.map((deposit) => (
-                  <div
-                    key={deposit.id}
-                    className="p-4 rounded-2xl bg-card border border-border animate-fade-in"
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <p className="font-semibold text-foreground text-sm">{deposit.userName}</p>
-                        <p className="text-xs text-muted-foreground">{deposit.userEmail}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-foreground">${deposit.amount.toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground">{deposit.cryptoAmount} {deposit.symbol}</p>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mb-3">{formatDate(deposit.date)}</p>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => handleApprove(deposit.id)}
-                        size="sm"
-                        className="flex-1 bg-green-500 hover:bg-green-600 h-9"
-                      >
-                        <Check className="w-4 h-4 mr-1" /> Approve
-                      </Button>
-                      <Button
-                        onClick={() => handleReject(deposit.id)}
-                        variant="destructive"
-                        size="sm"
-                        className="flex-1 h-9"
-                      >
-                        <X className="w-4 h-4 mr-1" /> Reject
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-
-                {/* Pending Transfers */}
-                {pendingTransfers.map((t) => (
-                  <div key={t._id} className="p-4 rounded-2xl bg-card border border-border animate-fade-in">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <p className="font-semibold text-foreground text-sm">{t.senderEmail} → {t.recipientEmail}</p>
-                        <p className="text-xs text-muted-foreground">{t.message || ''}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-foreground">${t.amount.toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground">{t.symbol || t.crypto}</p>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mb-3">{formatDate(t.createdAt)}</p>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={async () => {
-                          try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { 
-                              method: 'PUT', 
-                              headers: getHeaders(true) 
-                            });
-                            const data = await res.json();
-                            if (res.ok) {
-                              toast({ title: 'Transfer Approved', description: 'Transfer completed and balances updated.' });
-                              setPendingTransfers(prev => prev.filter(p => p._id !== t._id));
-                            } else {
-                              toast({ title: 'Error', description: data.error || 'Failed to approve', variant: 'destructive' });
-                            }
-                          } catch (err) { 
-                            console.error(err); 
-                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
-                          }
-                        }}
-                        size="sm"
-                        className="flex-1 bg-green-500 hover:bg-green-600 h-9"
-                      >
-                        <Check className="w-4 h-4 mr-1" /> Approve
-                      </Button>
-                      <Button
-                        onClick={async () => {
-                          try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { 
-                              method: 'PUT', 
-                              headers: getHeaders(true) 
-                            });
-                            const data = await res.json();
-                            if (res.ok) {
-                              toast({ title: 'Transfer Cancelled', description: 'Transfer has been cancelled.', variant: 'destructive' });
-                              setPendingTransfers(prev => prev.filter(p => p._id !== t._id));
-                            } else {
-                              toast({ title: 'Error', description: data.error || 'Failed to cancel', variant: 'destructive' });
-                            }
-                          } catch (err) { 
-                            console.error(err); 
-                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
-                          }
-                        }}
-                        variant="destructive"
-                        size="sm"
-                        className="flex-1 h-9"
-                      >
-                        <X className="w-4 h-4 mr-1" /> Reject
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-
-                {/* Pending Recipients */}
-                {pendingRecipients.map((r) => (
-                  <div key={r._id} className="p-4 rounded-2xl bg-card border border-border animate-fade-in">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <p className="font-semibold text-foreground text-sm">{r.email}</p>
-                        <p className="text-xs text-muted-foreground">{r.name || ''}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-foreground">Status: {r.status}</p>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mb-3">{formatDate(r.createdAt)}</p>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={async () => {
-                          try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/approve`, { 
-                              method: 'PUT', 
-                              headers: getHeaders(true) 
-                            });
-                            const data = await res.json();
-                            if (res.ok) {
-                              toast({ title: 'Recipient Approved', description: 'Recipient approved and user created.' });
-                              setPendingRecipients(prev => prev.filter(p => p._id !== r._id));
-                            } else {
-                              toast({ title: 'Error', description: data.error || 'Failed to approve recipient', variant: 'destructive' });
-                            }
-                          } catch (err) { 
-                            console.error(err); 
-                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
-                          }
-                        }}
-                        size="sm"
-                        className="flex-1 bg-green-500 hover:bg-green-600 h-9"
-                      >
-                        <Check className="w-4 h-4 mr-1" /> Approve
-                      </Button>
-                      <Button
-                        onClick={async () => {
-                          try {
-                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/reject`, { 
-                              method: 'PUT', 
-                              headers: getHeaders(true) 
-                            });
-                            const data = await res.json();
-                            if (res.ok) {
-                              toast({ title: 'Recipient Rejected', description: 'Recipient has been rejected.', variant: 'destructive' });
-                              setPendingRecipients(prev => prev.filter(p => p._id !== r._id));
-                            } else {
-                              toast({ title: 'Error', description: data.error || 'Failed to reject', variant: 'destructive' });
-                            }
-                          } catch (err) { 
-                            console.error(err); 
-                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
-                          }
-                        }}
-                        variant="destructive"
-                        size="sm"
-                        className="flex-1 h-9"
-                      >
-                        <X className="w-4 h-4 mr-1" /> Reject
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </>
-            )}
-            <PaginationControls
-              currentPage={depositsPage}
-              totalPages={getTotalPages(filteredPendingDeposits.length)}
-              onPageChange={setDepositsPage}
-            />
-          </TabsContent>
-
           {/* ACTIVE USERS TAB */}
           <TabsContent value="users" className="space-y-3">
             <div className="relative mb-3">
@@ -811,15 +877,6 @@ const AdminPage = () => {
               <div className="text-center py-12 bg-card rounded-2xl border border-border">
                 <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">No active users found</p>
-                <Button 
-                  onClick={() => window.location.reload()} 
-                  variant="outline" 
-                  size="sm" 
-                  className="mt-3"
-                >
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Refresh
-                </Button>
               </div>
             ) : (
               <div className="space-y-2">
@@ -869,17 +926,17 @@ const AdminPage = () => {
                     </div>
                   </div>
                 ))}
+                <PaginationControls
+                  currentPage={usersPage}
+                  totalPages={getTotalPages(filteredUsers.length)}
+                  onPageChange={setUsersPage}
+                />
               </div>
             )}
-            <PaginationControls
-              currentPage={usersPage}
-              totalPages={getTotalPages(filteredUsers.length)}
-              onPageChange={setUsersPage}
-            />
           </TabsContent>
 
+          {/* HISTORY TAB */}
           <TabsContent value="history" className="space-y-3">
-            {/* History Filters */}
             <div className="flex gap-2 mb-3">
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="flex-1 h-9">
@@ -910,35 +967,37 @@ const AdminPage = () => {
                 <p className="text-sm text-muted-foreground">No processed deposits yet</p>
               </div>
             ) : (
-              paginatedProcessedDeposits.map((deposit) => (
-                <div
-                  key={deposit.id}
-                  className="p-3 rounded-2xl bg-card border border-border animate-fade-in"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground text-sm">{deposit.userName}</p>
-                      <p className="text-xs text-muted-foreground">{deposit.userEmail}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{formatDate(deposit.date)}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-bold text-foreground">${deposit.amount.toLocaleString()}</p>
-                      <p className="text-xs text-muted-foreground">{deposit.cryptoAmount} {deposit.symbol}</p>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        deposit.status === 'approved' ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'
-                      }`}>
-                        {deposit.status}
-                      </span>
+              <>
+                {paginatedProcessedDeposits.map((deposit) => (
+                  <div
+                    key={deposit.id}
+                    className="p-3 rounded-2xl bg-card border border-border animate-fade-in"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-foreground text-sm">{deposit.userName}</p>
+                        <p className="text-xs text-muted-foreground">{deposit.userEmail}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{formatDate(deposit.date)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-foreground">${deposit.amount.toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">{deposit.cryptoAmount} {deposit.symbol}</p>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          deposit.status === 'approved' ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'
+                        }`}>
+                          {deposit.status}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                ))}
+                <PaginationControls
+                  currentPage={historyPage}
+                  totalPages={getTotalPages(filteredProcessedDeposits.length)}
+                  onPageChange={setHistoryPage}
+                />
+              </>
             )}
-            <PaginationControls
-              currentPage={historyPage}
-              totalPages={getTotalPages(filteredProcessedDeposits.length)}
-              onPageChange={setHistoryPage}
-            />
           </TabsContent>
         </Tabs>
       </div>
