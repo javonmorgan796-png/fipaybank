@@ -13,7 +13,7 @@ import { BottomNav } from "@/components/wallet/BottomNav";
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 const ITEMS_PER_PAGE = 5;
 
-interface UserData {
+interface UserData { 
   email: string;
   name: string;
   balance: number;
@@ -35,13 +35,27 @@ const AdminPage = () => {
   const [cryptoFilter, setCryptoFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [amountFilter, setAmountFilter] = useState<string>("all");
- 
+  const [pendingTransfers, setPendingTransfers] = useState<any[]>([]);
+  const [pendingRecipients, setPendingRecipients] = useState<any[]>([]);
+  
+  // Helper function to get admin headers
+  const getAdminHeaders = () => ({
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'x-admin': 'admin'
+  });
+  
   useEffect(() => {
     const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
     const fetchUsers = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/users`, { headers: { 'Accept': 'application/json' } });
-        if (!res.ok) { console.error('fetch users failed', res.status); return; }
+        const res = await fetch(`${API_BASE}/api/users`, { 
+          headers: getAdminHeaders()  // Fixed: Added admin headers
+        });
+        if (!res.ok) { 
+          console.error('fetch users failed', res.status); 
+          return; 
+        }
         let data: any = null;
         try {
           const ct = res.headers.get('content-type') || '';
@@ -86,16 +100,13 @@ const AdminPage = () => {
   const pendingDeposits = allDeposits.filter(d => d.status === 'pending');
   const processedDeposits = allDeposits.filter(d => d.status !== 'pending');
 
-  const [pendingTransfers, setPendingTransfers] = useState<any[]>([]);
-  const [pendingRecipients, setPendingRecipients] = useState<any[]>([]);
-
   useEffect(() => {
     const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
     const fetchPendingTransfers = async () => {
       try {
         const [res1, res2] = await Promise.all([
-          fetch(`${API_BASE}/api/admin/pending`),
-          fetch(`${API_BASE}/api/admin/pending-recipient`)
+          fetch(`${API_BASE}/api/admin/pending`, { headers: getAdminHeaders() }),  // Fixed: Added admin headers
+          fetch(`${API_BASE}/api/admin/pending-recipient`, { headers: getAdminHeaders() })  // Fixed: Added admin headers
         ]);
         if (res1.ok) {
           const data = await res1.json();
@@ -210,8 +221,78 @@ const AdminPage = () => {
               <p className="text-xs text-muted-foreground">Manage users & deposits</p>
             </div>
           </div>
-          <div className="p-2 rounded-full bg-primary/10">
-            <Shield className="w-5 h-5 text-primary" />
+          
+          <div className="flex items-center gap-2">
+            {/* Test Admin Access Button */}
+            <button 
+              onClick={async () => {
+                try {
+                  const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+                  const res = await fetch(`${API_BASE}/api/users`, {
+                    headers: getAdminHeaders()
+                  });
+                  const data = await res.json();
+                  console.log('Test response:', data);
+                  toast({
+                    title: res.ok ? "Admin Access OK" : "Admin Access Failed",
+                    description: `Status: ${res.status}`,
+                    variant: res.ok ? "default" : "destructive"
+                  });
+                } catch (err) {
+                  console.error('Test failed:', err);
+                  toast({ title: "Test Failed", description: "Network error", variant: "destructive" });
+                }
+              }}
+              className="p-2 rounded-full hover:bg-secondary"
+              title="Test Admin Access"
+            >
+              <svg className="w-5 h-5 text-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </button>
+            
+            {/* Refresh Users Button */}
+            <button 
+              onClick={async () => {
+                try {
+                  const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+                  const res = await fetch(`${API_BASE}/api/users`, { 
+                    headers: getAdminHeaders()
+                  });
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  const data = await res.json();
+                  const userList: UserData[] = (data.users || []).map((u: any) => ({
+                    email: u.email,
+                    name: u.name,
+                    balance: u.balance || 0,
+                    id: u._id || u.id,
+                    suspended: u.suspended ?? false,
+                  }));
+                  setUsers(userList);
+                  toast({ 
+                    title: "Users Refreshed", 
+                    description: `Loaded ${userList.length} users` 
+                  });
+                } catch (err) {
+                  console.error('Refresh failed:', err);
+                  toast({ 
+                    title: "Refresh Failed", 
+                    description: "Could not fetch users", 
+                    variant: "destructive" 
+                  });
+                }
+              }}
+              className="p-2 rounded-full hover:bg-secondary"
+              title="Refresh Users"
+            >
+              <svg className="w-5 h-5 text-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+            
+            <div className="p-2 rounded-full bg-primary/10">
+              <Shield className="w-5 h-5 text-primary" />
+            </div>
           </div>
         </div>
 
@@ -342,11 +423,10 @@ const AdminPage = () => {
                         onClick={async () => {
                           try {
                             const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-admin': 'admin' } });
+                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { method: 'PUT', headers: getAdminHeaders() });
                             const data = await res.json();
                             if (res.ok) {
                               toast({ title: 'Transfer Approved', description: 'Transfer completed and balances updated.' });
-                              // remove approved transfer from list
                               setPendingTransfers(prev => prev.filter(p => p._id !== t._id));
                             } else {
                               toast({ title: 'Error', description: data.error || 'Failed to approve', variant: 'destructive' });
@@ -362,7 +442,7 @@ const AdminPage = () => {
                         onClick={async () => {
                           try {
                             const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { method: 'PUT', headers: { 'Content-Type': 'application/json' } });
+                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { method: 'PUT', headers: getAdminHeaders() });
                             const data = await res.json();
                             if (res.ok) {
                               toast({ title: 'Transfer Cancelled', description: 'Transfer has been cancelled.', variant: 'destructive' });
@@ -400,7 +480,7 @@ const AdminPage = () => {
                         onClick={async () => {
                           try {
                             const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/approve`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-admin': 'admin' } });
+                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/approve`, { method: 'PUT', headers: getAdminHeaders() });
                             const data = await res.json();
                             if (res.ok) {
                               toast({ title: 'Recipient Approved', description: 'Recipient approved and user created.' });
@@ -419,7 +499,7 @@ const AdminPage = () => {
                         onClick={async () => {
                           try {
                             const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/reject`, { method: 'PUT', headers: { 'Content-Type': 'application/json' } });
+                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/reject`, { method: 'PUT', headers: getAdminHeaders() });
                             const data = await res.json();
                             if (res.ok) {
                               toast({ title: 'Recipient Rejected', description: 'Recipient has been rejected.', variant: 'destructive' });
@@ -490,7 +570,7 @@ const AdminPage = () => {
                               const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
                               const res = await fetch(`${API_BASE}/api/admin/users/${u.id}/suspend`, {
                                 method: 'PUT',
-                                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-admin': 'admin' },
+                                headers: getAdminHeaders(),
                                 body: JSON.stringify({ suspended: !u.suspended })
                               });
                               let data: any = null;
