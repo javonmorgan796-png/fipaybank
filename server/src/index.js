@@ -147,13 +147,7 @@ const userSchema = new Schema({
   suspensionDate: { type: Date },
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   lastLogin: { type: Date },
-  emailVerified: { type: Boolean, default: false },
-  signupStatus: { 
-    type: String, 
-    enum: ['pending', 'approved', 'rejected', 'active'], 
-    default: 'active' 
-  },
-  signupNotes: { type: String, default: '' }
+  emailVerified: { type: Boolean, default: false }
 }, { 
   timestamps: true,
   toJSON: {
@@ -168,7 +162,6 @@ const userSchema = new Schema({
 // Indexes for better query performance
 userSchema.index({ email: 1 });
 userSchema.index({ createdAt: -1 });
-userSchema.index({ signupStatus: 1 });
 
 const User = mongoose.model('User', userSchema);
 
@@ -377,12 +370,6 @@ const authenticateUser = async (req, res, next) => {
       return errorResponse(res, 404, 'User not found');
     }
 
-    // REMOVED: Suspension check - allow suspended users to authenticate
-    // if (user.suspended) {
-    //   console.log('[AUTH] User suspended:', userId);
-    //   return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
-    // }
-
     console.log('[AUTH] User authenticated:', user.email, user.suspended ? '(SUSPENDED)' : '');
     req.user = user;
     req.userId = userId;
@@ -403,85 +390,22 @@ const restrictSuspendedUsers = (req, res, next) => {
   next();
 };
 
-// FIXED: Admin middleware with proper token validation
+// FIXED Admin middleware - checks user role
 const requireAdmin = async (req, res, next) => {
   try {
-    console.log('[ADMIN] Admin access attempt detected');
+    // First authenticate the user
+    await authenticateUser(req, res, () => {});
     
-    // Get admin token from header
-    const adminToken = req.headers['x-admin'];
-    const authHeader = req.headers['authorization'];
-    
-    // Check if admin token exists in environment
-    const validAdminToken = process.env.ADMIN_TOKEN || 'admin-secret-key-change-this';
-    
-    console.log('[ADMIN] Checking credentials:', {
-      hasXAdmin: !!adminToken,
-      hasAuthHeader: !!authHeader,
-      adminTokenFromEnv: validAdminToken ? 'present' : 'missing'
-    });
-    
-    // Check for admin token in x-admin header
-    if (adminToken && adminToken === validAdminToken) {
-      console.log('[ADMIN] Access granted via x-admin header');
-      req.isAdmin = true;
-      return next();
+    // Check if user is admin
+    if (!req.user || req.user.role !== 'admin') {
+      console.log('[ADMIN] Non-admin attempt:', req.user?.email);
+      return errorResponse(res, 403, 'Admin access required');
     }
     
-    // Check for Bearer token in Authorization header
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      if (token === validAdminToken) {
-        console.log('[ADMIN] Access granted via Authorization header');
-        req.isAdmin = true;
-        return next();
-      }
-    }
-    
-    // Also check for admin user role (if user is logged in)
-    let userId = req.headers['x-user-id'] || req.headers['user-id'];
-    
-    // Try to extract from query or body
-    if (!userId) {
-      userId = req.query.userId || req.body.userId;
-    }
-    
-    // Try to extract from Authorization header if it contains a valid ObjectId
-    if (!userId && authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      if (mongoose.Types.ObjectId.isValid(token)) {
-        userId = token;
-      }
-    }
-    
-    if (userId && mongoose.Types.ObjectId.isValid(userId.toString().trim())) {
-      const cleanUserId = userId.toString().trim();
-      const user = await User.findById(cleanUserId);
-      
-      if (user && user.role === 'admin') {
-        console.log('[ADMIN] Access granted via admin role:', user.email);
-        req.isAdmin = true;
-        req.adminUser = user;
-        return next();
-      } else if (user) {
-        console.log('[ADMIN] User found but not admin:', user.email, 'role:', user.role);
-      } else {
-        console.log('[ADMIN] User not found with ID:', cleanUserId);
-      }
-    }
-    
-    console.error('[ADMIN] Access denied. No valid admin credentials provided');
-    console.error('[ADMIN] Headers received:', {
-      'x-admin': adminToken ? 'present' : 'missing',
-      'authorization': authHeader ? 'present' : 'missing',
-      'x-user-id': req.headers['x-user-id'] ? 'present' : 'missing',
-      'user-id': req.headers['user-id'] ? 'present' : 'missing'
-    });
-    
-    return errorResponse(res, 403, 'Admin access required. Invalid or missing credentials. Please provide valid admin token or login as admin user.');
-    
+    console.log('[ADMIN] Admin access granted:', req.user.email);
+    next();
   } catch (error) {
-    console.error('[ADMIN] Authentication error:', error);
+    console.error('[ADMIN] Error:', error);
     return errorResponse(res, 500, 'Admin authentication error', error);
   }
 };
@@ -501,25 +425,6 @@ app.get('/api/auth/test', authenticateUser, async (req, res) => {
     authInfo: {
       method: 'authenticated endpoint',
       timestamp: new Date().toISOString()
-    }
-  });
-});
-
-// Admin test endpoint
-app.get('/api/admin/test', requireAdmin, (req, res) => {
-  return successResponse(res, {
-    message: 'Admin access is working correctly!',
-    adminInfo: {
-      timestamp: new Date().toISOString(),
-      method: req.headers['x-admin'] ? 'x-admin header' : 
-              req.headers['authorization'] ? 'authorization header' : 
-              req.adminUser ? 'admin role' : 'unknown',
-      isAdmin: req.isAdmin,
-      adminUser: req.adminUser ? {
-        id: req.adminUser._id,
-        email: req.adminUser.email,
-        name: req.adminUser.name
-      } : null
     }
   });
 });
@@ -554,24 +459,16 @@ app.post('/api/auth/signup', async (req, res) => {
       countryCode, 
       countryName, 
       countryFlag, 
-      dialCode,
-      // If AUTO_APPROVE_SIGNUPS is false, set status to pending
-      signupStatus: process.env.AUTO_APPROVE_SIGNUPS === 'false' ? 'pending' : 'active',
-      signupNotes: process.env.AUTO_APPROVE_SIGNUPS === 'false' ? 'Pending admin approval' : 'Auto-approved'
+      dialCode 
     });
     
     await user.save();
-    console.log('[signup] user created:', user.email, 'status:', user.signupStatus);
+    console.log('[signup] user created:', user.email);
 
     const userObj = user.toObject();
     delete userObj.password;
 
-    return successResponse(res, { 
-      user: userObj,
-      message: process.env.AUTO_APPROVE_SIGNUPS === 'false' 
-        ? 'Account created successfully! Pending admin approval.' 
-        : 'Account created successfully!' 
-    }, 201);
+    return successResponse(res, { user: userObj }, 201);
   } catch (err) {
     console.error('[signup] error', err);
     return errorResponse(res, 500, 'Failed to create account', err);
@@ -590,24 +487,6 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user) {
       return errorResponse(res, 401, 'Invalid credentials');
     }
-
-    // Check if signup is pending approval
-    if (user.signupStatus === 'pending') {
-      console.log('[login] Attempt by pending user:', email);
-      return errorResponse(res, 403, 'Your account is pending admin approval. Please wait for approval.');
-    }
-
-    // Check if signup was rejected
-    if (user.signupStatus === 'rejected') {
-      console.log('[login] Attempt by rejected user:', email);
-      return errorResponse(res, 403, 'Your account registration was rejected. Please contact support.');
-    }
-
-    // REMOVED: Suspension check - allow suspended users to login
-    // if (user.suspended) {
-    //   console.log('[login] Attempt by suspended user:', email);
-    //   return errorResponse(res, 403, `Account suspended. Reason: ${user.suspensionReason || 'Contact support for assistance.'}`);
-    // }
 
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) {
@@ -973,7 +852,7 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
       Transaction.countDocuments({ userId }),
       Deposit.countDocuments({ userId }),
       Deposit.countDocuments({ userId, status: 'pending' }),
-      User.findById(userId).select('balance name email suspended suspensionReason signupStatus')
+      User.findById(userId).select('balance name email suspended suspensionReason')
     ]);
     
     return successResponse(res, {
@@ -986,7 +865,6 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
         totalDeposits: depositsCount,
         pendingDeposits: pendingDeposits,
         accountStatus: user.suspended ? 'suspended' : 'active',
-        signupStatus: user.signupStatus,
         suspensionReason: user.suspensionReason
       }
     });
@@ -1136,115 +1014,26 @@ app.get('/api/pending-recipient', authenticateUser, async (req, res) => {
   }
 });
 
-// FIXED: Admin: list pending recipients with detailed logging
-app.get('/api/admin/pending-recipient', requireAdmin, async (req, res) => {
+// =================== ADMIN ENDPOINTS ===================
+
+// Admin: Get all users
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN PENDING RECIPIENT] Request received at:', new Date().toISOString());
-    console.log('[ADMIN PENDING RECIPIENT] Query params:', req.query);
-    console.log('[ADMIN PENDING RECIPIENT] Headers:', {
-      'x-admin': req.headers['x-admin'] ? 'present' : 'missing',
-      'authorization': req.headers['authorization'] ? 'present' : 'missing',
-      'user-id': req.headers['user-id'] ? 'present' : 'missing',
-      'x-user-id': req.headers['x-user-id'] ? 'present' : 'missing'
-    });
-    
-    const { status, page = 1, limit = 20, email } = req.query;
+    const { search, page = 1, limit = 50 } = req.query;
     const query = {};
     
-    if (status) {
-      query.status = status;
-    } else {
-      query.status = 'pending';
-    }
-    
-    if (email) {
-      query.email = String(email).toLowerCase().trim();
-    }
-    
-    console.log('[ADMIN PENDING RECIPIENT] MongoDB query:', query);
-    
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
-    
-    // Count total first
-    const total = await PendingRecipient.countDocuments(query);
-    console.log(`[ADMIN PENDING RECIPIENT] Total documents found: ${total}`);
-    
-    const pendingRecipients = await PendingRecipient.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .lean();
-    
-    console.log(`[ADMIN PENDING RECIPIENT] Returning ${pendingRecipients.length} pending recipients`);
-    
-    return successResponse(res, { 
-      pendingRecipients, 
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        pages: Math.ceil(total / limitNum)
-      },
-      queryInfo: {
-        status: query.status,
-        emailFilter: query.email || 'none',
-        timestamp: new Date().toISOString()
-      }
-    });
-  } catch (err) {
-    console.error('[ADMIN PENDING RECIPIENT] Failed to fetch pending recipients:', err);
-    return errorResponse(res, 500, 'Failed to fetch pending recipients', err);
-  }
-});
-
-// NEW: Admin: Get recent user signups (users who directly signed up)
-app.get('/api/admin/recent-signups', requireAdmin, async (req, res) => {
-  try {
-    console.log('[ADMIN RECENT SIGNUPS] Request received');
-    
-    const { days = 7, page = 1, limit = 20, status, search } = req.query;
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
-    
-    // Calculate cutoff date
-    const cutoffDate = new Date(Date.now() - Math.max(0, days) * 24 * 60 * 60 * 1000);
-    
-    // Build query for recent users
-    const query = {
-      createdAt: { $gte: cutoffDate }
-    };
-    
-    // Filter by signup status if provided
-    if (status) {
-      query.signupStatus = status;
-    } else {
-      // Default: show both pending and active signups
+    if (search) {
       query.$or = [
-        { signupStatus: 'pending' },
-        { signupStatus: 'active' }
+        { email: { $regex: search, $options: 'i' } },
+        { name: { $regex: search, $options: 'i' } }
       ];
     }
     
-    // Add search if provided
-    if (search && search.trim()) {
-      const searchTerm = search.trim();
-      query.$or = [
-        { email: { $regex: searchTerm, $options: 'i' } },
-        { name: { $regex: searchTerm, $options: 'i' } }
-      ];
-    }
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
     
-    console.log('[ADMIN RECENT SIGNUPS] Query:', {
-      cutoffDate,
-      status: status || 'all',
-      search: search || 'none',
-      days
-    });
-    
-    const [recentSignups, total] = await Promise.all([
+    const [users, total] = await Promise.all([
       User.find(query)
         .select('-password -__v')
         .sort({ createdAt: -1 })
@@ -1254,230 +1043,138 @@ app.get('/api/admin/recent-signups', requireAdmin, async (req, res) => {
       User.countDocuments(query)
     ]);
     
-    console.log(`[ADMIN RECENT SIGNUPS] Found ${recentSignups.length} recent signups`);
-    
-    return successResponse(res, {
-      recentSignups,
+    return successResponse(res, { 
+      users, 
       pagination: {
         page: pageNum,
         limit: limitNum,
         total,
         pages: Math.ceil(total / limitNum)
-      },
-      timeframe: {
-        days,
-        cutoffDate,
-        totalSignups: total
       }
     });
   } catch (err) {
-    console.error('[ADMIN RECENT SIGNUPS] Failed to fetch recent signups:', err);
-    return errorResponse(res, 500, 'Failed to fetch recent signups', err);
+    console.error('[ADMIN:users] error:', err);
+    return errorResponse(res, 500, 'Failed to fetch users', err);
   }
 });
 
-// NEW: Admin: Get combined view of all pending items (recipients + signups)
-app.get('/api/admin/all-pending', requireAdmin, async (req, res) => {
+// Admin: Get all deposits
+app.get('/api/admin/deposits', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN ALL PENDING] Request received');
+    const { status, userId, page = 1, limit = 50 } = req.query;
+    const query = {};
     
-    const { days = 7, page = 1, limit = 20 } = req.query;
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    if (userId) {
+      query.userId = userId;
+    }
+    
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
     
-    // Calculate cutoff date
-    const cutoffDate = new Date(Date.now() - Math.max(0, days) * 24 * 60 * 60 * 1000);
-    
-    // Get pending recipients
-    const pendingRecipientsQuery = {
-      status: 'pending',
-      createdAt: { $gte: cutoffDate }
-    };
-    
-    // Get pending user signups
-    const pendingSignupsQuery = {
-      signupStatus: 'pending',
-      createdAt: { $gte: cutoffDate }
-    };
-    
-    const [pendingRecipients, pendingSignups, pendingRecipientsCount, pendingSignupsCount] = await Promise.all([
-      // Pending recipients (from pending recipient flow)
-      PendingRecipient.find(pendingRecipientsQuery)
+    const [deposits, total] = await Promise.all([
+      Deposit.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
         .lean(),
-      
-      // Pending user signups (from direct signup flow)
-      User.find(pendingSignupsQuery)
-        .select('-password -__v')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      
-      // Counts
-      PendingRecipient.countDocuments(pendingRecipientsQuery),
-      User.countDocuments(pendingSignupsQuery)
+      Deposit.countDocuments(query)
     ]);
     
-    // Combine results with type indicators
-    const allPendingItems = [
-      ...pendingRecipients.map(item => ({ 
-        ...item, 
-        type: 'pending_recipient',
-        source: 'recipient_request',
-        requiresApproval: true,
-        status: item.status,
-        email: item.email,
-        name: item.name,
-        createdAt: item.createdAt,
-        id: item._id
-      })),
-      ...pendingSignups.map(item => ({
-        ...item,
-        type: 'pending_signup',
-        source: 'direct_signup',
-        requiresApproval: true,
-        status: item.signupStatus,
-        email: item.email,
-        name: item.name,
-        createdAt: item.createdAt,
-        id: item._id,
-        userId: item._id
-      }))
-    ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    
-    console.log(`[ADMIN ALL PENDING] Found ${pendingRecipients.length} pending recipients and ${pendingSignups.length} pending signups`);
-    
-    return successResponse(res, {
-      allPendingItems: allPendingItems.slice(0, limitNum),
-      counts: {
-        pendingRecipients: pendingRecipientsCount,
-        pendingSignups: pendingSignupsCount,
-        total: pendingRecipientsCount + pendingSignupsCount
-      },
+    return successResponse(res, { 
+      deposits, 
       pagination: {
         page: pageNum,
         limit: limitNum,
-        totalPendingRecipients: pendingRecipientsCount,
-        totalPendingSignups: pendingSignupsCount,
-        totalAll: pendingRecipientsCount + pendingSignupsCount
-      },
-      timeframe: {
-        days,
-        cutoffDate
+        total,
+        pages: Math.ceil(total / limitNum)
       }
     });
   } catch (err) {
-    console.error('[ADMIN ALL PENDING] Failed to fetch all pending items:', err);
-    return errorResponse(res, 500, 'Failed to fetch all pending items', err);
+    console.error('[ADMIN:deposits] error:', err);
+    return errorResponse(res, 500, 'Failed to fetch deposits', err);
   }
 });
 
-// NEW: Admin: Approve pending user signup
-app.put('/api/admin/signup-approve/:id', requireAdmin, async (req, res) => {
+// Admin: Get all pending transactions
+app.get('/api/admin/pending-transactions', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN SIGNUP APPROVE] Approving user signup ID:', req.params.id);
+    const { status, page = 1, limit = 50 } = req.query;
+    const query = {};
     
-    const { id } = req.params;
-    const { notes } = req.body;
-    const adminId = req.headers['x-admin'] || req.adminUser?._id || 'admin';
-    
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return errorResponse(res, 400, 'Invalid user ID');
+    if (status && status !== 'all') {
+      query.status = status;
+    } else {
+      query.status = 'pending';
     }
     
-    const user = await User.findById(id);
-    if (!user) {
-      return errorResponse(res, 404, 'User not found');
-    }
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
     
-    if (user.signupStatus !== 'pending') {
-      return successResponse(res, {
-        approved: false,
-        message: `User signup is already ${user.signupStatus}`,
-        user: user
-      });
-    }
+    const [transactions, total] = await Promise.all([
+      PendingTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      PendingTransaction.countDocuments(query)
+    ]);
     
-    // Update user status
-    user.signupStatus = 'approved';
-    user.signupNotes = notes || 'Approved by admin';
-    user.emailVerified = true;
-    await user.save();
-    
-    console.log(`[ADMIN SIGNUP APPROVE] User ${user.email} approved successfully`);
-    
-    const userObj = user.toObject();
-    delete userObj.password;
-    
-    return successResponse(res, {
-      approved: true,
-      user: userObj,
-      message: 'User signup approved successfully'
+    return successResponse(res, { 
+      transactions, 
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
     });
   } catch (err) {
-    console.error('[ADMIN SIGNUP APPROVE] Failed to approve user signup:', err);
-    return errorResponse(res, 500, 'Failed to approve user signup', err);
+    console.error('[ADMIN:pending-transactions] error:', err);
+    return errorResponse(res, 500, 'Failed to fetch pending transactions', err);
   }
 });
 
-// NEW: Admin: Reject pending user signup
-app.put('/api/admin/signup-reject/:id', requireAdmin, async (req, res) => {
+// Admin: list pending recipients
+app.get('/api/admin/pending-recipient', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN SIGNUP REJECT] Rejecting user signup ID:', req.params.id);
+    const { status, page = 1, limit = 20 } = req.query;
+    const query = { status: status || 'pending' };
     
-    const { id } = req.params;
-    const { notes } = req.body;
-    const adminId = req.headers['x-admin'] || req.adminUser?._id || 'admin';
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
     
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return errorResponse(res, 400, 'Invalid user ID');
-    }
+    const [pendingRecipients, total] = await Promise.all([
+      PendingRecipient.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      PendingRecipient.countDocuments(query)
+    ]);
     
-    const user = await User.findById(id);
-    if (!user) {
-      return errorResponse(res, 404, 'User not found');
-    }
-    
-    if (user.signupStatus !== 'pending') {
-      return successResponse(res, {
-        rejected: false,
-        message: `User signup is already ${user.signupStatus}`,
-        user: user
-      });
-    }
-    
-    // Update user status
-    user.signupStatus = 'rejected';
-    user.signupNotes = notes || 'Rejected by admin';
-    user.suspended = true;
-    user.suspensionReason = 'Signup rejected by admin';
-    await user.save();
-    
-    console.log(`[ADMIN SIGNUP REJECT] User ${user.email} rejected`);
-    
-    const userObj = user.toObject();
-    delete userObj.password;
-    
-    return successResponse(res, {
-      rejected: true,
-      user: userObj,
-      message: 'User signup rejected'
+    return successResponse(res, { 
+      pendingRecipients, 
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
     });
   } catch (err) {
-    console.error('[ADMIN SIGNUP REJECT] Failed to reject user signup:', err);
-    return errorResponse(res, 500, 'Failed to reject user signup', err);
+    return errorResponse(res, 500, 'Failed to fetch pending recipients', err);
   }
 });
 
 // Admin: recipient history list
 app.get('/api/admin/pending-recipient/history', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN RECIPIENT HISTORY] Request received');
-    
     const { limit = 100, page = 1 } = req.query;
     const limitNum = Math.max(1, Math.min(500, parseInt(limit)));
     const pageNum = Math.max(1, parseInt(page));
@@ -1492,8 +1189,6 @@ app.get('/api/admin/pending-recipient/history', requireAdmin, async (req, res) =
       RecipientHistory.countDocuments({})
     ]);
     
-    console.log(`[ADMIN RECIPIENT HISTORY] Returning ${history.length} history records`);
-    
     return successResponse(res, { 
       history, 
       pagination: {
@@ -1504,7 +1199,6 @@ app.get('/api/admin/pending-recipient/history', requireAdmin, async (req, res) =
       }
     });
   } catch (err) {
-    console.error('[ADMIN RECIPIENT HISTORY] Failed to fetch recipient history:', err);
     return errorResponse(res, 500, 'Failed to fetch recipient history', err);
   }
 });
@@ -1514,26 +1208,16 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      console.log('[ADMIN APPROVE RECIPIENT] Starting approval for ID:', req.params.id);
-      
       const { id } = req.params;
       const { notes } = req.body;
-      const adminId = req.headers['x-admin'] || 'admin';
+      const adminId = req.user?._id || 'admin';
       
       const pr = await PendingRecipient.findById(id).session(session);
       if (!pr) {
-        console.log('[ADMIN APPROVE RECIPIENT] Pending recipient not found with ID:', id);
         throw new Error('Pending recipient not found');
       }
       
-      console.log('[ADMIN APPROVE RECIPIENT] Found pending recipient:', {
-        id: pr._id,
-        email: pr.email,
-        status: pr.status
-      });
-      
       if (pr.status !== 'pending') {
-        console.log('[ADMIN APPROVE RECIPIENT] Status is not pending:', pr.status);
         const history = new RecipientHistory({
           email: pr.email,
           name: pr.name || '',
@@ -1558,22 +1242,16 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
       // Create user if not exists
       let user = await User.findOne({ email: pr.email }).session(session);
       if (!user) {
-        console.log('[ADMIN APPROVE RECIPIENT] Creating new user for email:', pr.email);
         const randomPassword = crypto.randomBytes(12).toString('hex');
         const hashed = await bcrypt.hash(randomPassword, 10);
         user = new User({ 
           email: pr.email, 
           password: hashed, 
           name: pr.name || pr.email.split('@')[0],
-          emailVerified: true,
-          signupStatus: 'approved',
-          signupNotes: 'Approved from pending recipient'
+          emailVerified: true
         });
         
         await user.save({ session });
-        console.log('[ADMIN APPROVE RECIPIENT] New user created:', user._id);
-      } else {
-        console.log('[ADMIN APPROVE RECIPIENT] User already exists:', user._id);
       }
 
       const history = new RecipientHistory({
@@ -1593,8 +1271,6 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
       const safeUser = user.toObject();
       delete safeUser.password;
       
-      console.log('[ADMIN APPROVE RECIPIENT] Approval completed successfully');
-      
       return successResponse(res, { 
         success: true, 
         removed: true, 
@@ -1603,7 +1279,6 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
       });
     });
   } catch (err) {
-    console.error('[ADMIN APPROVE RECIPIENT] Failed to approve pending recipient:', err);
     return errorResponse(res, 500, 'Failed to approve pending recipient', err);
   } finally {
     await session.endSession();
@@ -1613,23 +1288,14 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
 // Admin: reject pending recipient
 app.put('/api/admin/pending-recipient/:id/reject', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN REJECT RECIPIENT] Starting rejection for ID:', req.params.id);
-    
     const { id } = req.params;
     const { notes } = req.body;
-    const adminId = req.headers['x-admin'] || 'admin';
+    const adminId = req.user?._id || 'admin';
     
     const pr = await PendingRecipient.findById(id);
     if (!pr) {
-      console.log('[ADMIN REJECT RECIPIENT] Pending recipient not found with ID:', id);
       return errorResponse(res, 404, 'Pending recipient not found');
     }
-    
-    console.log('[ADMIN REJECT RECIPIENT] Found pending recipient:', {
-      id: pr._id,
-      email: pr.email,
-      status: pr.status
-    });
     
     const history = new RecipientHistory({
       email: pr.email,
@@ -1644,15 +1310,12 @@ app.put('/api/admin/pending-recipient/:id/reject', requireAdmin, async (req, res
     await history.save();
     await PendingRecipient.deleteOne({ _id: pr._id });
     
-    console.log('[ADMIN REJECT RECIPIENT] Rejection completed successfully');
-    
     return successResponse(res, { 
       success: true, 
       removed: true, 
       history 
     });
   } catch (err) {
-    console.error('[ADMIN REJECT RECIPIENT] Failed to reject pending recipient:', err);
     return errorResponse(res, 500, 'Failed to reject pending recipient', err);
   }
 });
@@ -1660,8 +1323,6 @@ app.put('/api/admin/pending-recipient/:id/reject', requireAdmin, async (req, res
 // Admin: list all pending transactions
 app.get('/api/admin/pending', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN PENDING TX] Request received');
-    
     const { days = 30, status, page = 1, limit = 20 } = req.query;
     const query = {};
     
@@ -1687,8 +1348,6 @@ app.get('/api/admin/pending', requireAdmin, async (req, res) => {
       PendingTransaction.countDocuments(query)
     ]);
     
-    console.log(`[ADMIN PENDING TX] Returning ${pendings.length} pending transactions`);
-    
     return successResponse(res, { 
       pendings, 
       pagination: {
@@ -1700,7 +1359,6 @@ app.get('/api/admin/pending', requireAdmin, async (req, res) => {
       cutoffDate: cutoff
     });
   } catch (err) {
-    console.error('[ADMIN PENDING TX] Failed to fetch pending transactions:', err);
     return errorResponse(res, 500, 'Failed to fetch pending transactions', err);
   }
 });
@@ -1708,12 +1366,8 @@ app.get('/api/admin/pending', requireAdmin, async (req, res) => {
 // Admin: cleanup old pending transactions and non-pending records
 app.delete('/api/admin/pending/cleanup', requireAdmin, async (req, res) => {
   try {
-    console.log('[ADMIN CLEANUP] Request received');
-    
     const olderThanDays = Number(req.query.olderThanDays || 30);
     const cutoff = new Date(Date.now() - Math.max(0, olderThanDays) * 24 * 60 * 60 * 1000);
-    
-    console.log('[ADMIN CLEANUP] Cleaning up with cutoff date:', cutoff);
     
     const nonPendingResult = await PendingTransaction.deleteMany({ 
       status: { $ne: 'pending' } 
@@ -1724,11 +1378,6 @@ app.delete('/api/admin/pending/cleanup', requireAdmin, async (req, res) => {
       createdAt: { $lt: cutoff } 
     });
     
-    console.log('[ADMIN CLEANUP] Cleanup results:', {
-      removedNonPending: nonPendingResult.deletedCount || 0,
-      removedOldPending: oldPendingResult.deletedCount || 0
-    });
-    
     return successResponse(res, {
       removedNonPending: nonPendingResult.deletedCount || 0,
       removedOldPending: oldPendingResult.deletedCount || 0,
@@ -1736,7 +1385,6 @@ app.delete('/api/admin/pending/cleanup', requireAdmin, async (req, res) => {
       message: 'Cleanup completed successfully'
     });
   } catch (err) {
-    console.error('[ADMIN CLEANUP] Failed to cleanup pending transactions:', err);
     return errorResponse(res, 500, 'Failed to cleanup pending transactions', err);
   }
 });
@@ -1748,7 +1396,7 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
     await session.withTransaction(async () => {
       const { id } = req.params;
       const { notes } = req.body;
-      const adminId = req.headers['x-admin'] || 'admin';
+      const adminId = req.user?._id || 'admin';
       
       if (!mongoose.Types.ObjectId.isValid(id)) {
         throw new Error('Invalid pending id');
@@ -1815,9 +1463,7 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
                 email: pendingRecipient.email, 
                 password: hashed, 
                 name: defaultName,
-                emailVerified: true,
-                signupStatus: 'approved',
-                signupNotes: 'Auto-created via transaction approval'
+                emailVerified: true
               } 
             },
             { upsert: true, session }
@@ -2087,16 +1733,6 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
       if (!sender) {
         throw new Error('Sender not found');
       }
-
-      // Check if sender's signup is pending
-      if (sender.signupStatus === 'pending') {
-        throw new Error('Your account is pending approval. You cannot send money until approved.');
-      }
-
-      // REMOVED: Suspension check - handled by restrictSuspendedUsers middleware
-      // if (sender.suspended === true) {
-      //   throw new Error('Sender account is suspended');
-      // }
 
       // If using wallet balance, ensure sender has sufficient funds before creating pending
       if (paymentMethod !== 'card' && (sender.balance || 0) < amount) {
@@ -2369,37 +2005,27 @@ app.put('/api/users/:id/password', authenticateUser, restrictSuspendedUsers, asy
   }
 });
 
-// DEBUG: optional users listing (enable with ENABLE_DEBUG=true)
-app.get('/api/debug/users', async (req, res) => {
-  if (process.env.ENABLE_DEBUG !== 'true') {
-    return errorResponse(res, 403, 'Debug endpoint disabled');
-  }
-  
-  try {
-    const users = await User.find({}).select('-password -__v');
-    return successResponse(res, { users });
-  } catch (err) {
-    return errorResponse(res, 500, 'Failed to fetch debug users', err);
-  }
-});
-
 // Statistics endpoint
-app.get('/api/stats', requireAdmin, async (req, res) => {
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   try {
     const [
       totalUsers,
       totalDeposits,
       totalTransactions,
       pendingTransactions,
-      totalBalance
+      pendingDeposits,
+      totalBalance,
+      activeUsers
     ] = await Promise.all([
       User.countDocuments(),
       Deposit.countDocuments(),
       Transaction.countDocuments(),
       PendingTransaction.countDocuments({ status: 'pending' }),
+      Deposit.countDocuments({ status: 'pending' }),
       User.aggregate([
         { $group: { _id: null, total: { $sum: '$balance' } } }
-      ])
+      ]),
+      User.countDocuments({ lastLogin: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } })
     ]);
     
     return successResponse(res, {
@@ -2408,60 +2034,14 @@ app.get('/api/stats', requireAdmin, async (req, res) => {
         totalDeposits,
         totalTransactions,
         pendingTransactions,
+        pendingDeposits,
         totalBalance: totalBalance[0]?.total || 0,
-        activeUsers: await User.countDocuments({ lastLogin: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } })
+        activeUsers
       }
     });
   } catch (err) {
+    console.error('[ADMIN:stats] error:', err);
     return errorResponse(res, 500, 'Failed to fetch statistics', err);
-  }
-});
-
-// NEW: Admin dashboard statistics with signup info
-app.get('/api/admin/dashboard-stats', requireAdmin, async (req, res) => {
-  try {
-    console.log('[ADMIN DASHBOARD STATS] Request received');
-    
-    const [totalUsers, pendingRecipients, pendingSignups, pendingTransactions, totalBalance, recentSignups24h] = await Promise.all([
-      // Total users
-      User.countDocuments({}),
-      
-      // Pending recipients
-      PendingRecipient.countDocuments({ status: 'pending' }),
-      
-      // Pending user signups
-      User.countDocuments({ signupStatus: 'pending' }),
-      
-      // Pending transactions
-      PendingTransaction.countDocuments({ status: 'pending' }),
-      
-      // Total balance
-      User.aggregate([
-        { $group: { _id: null, total: { $sum: '$balance' } } }
-      ]),
-      
-      // Recent signups (last 24 hours)
-      User.countDocuments({ 
-        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-      })
-    ]);
-    
-    return successResponse(res, {
-      dashboardStats: {
-        totalUsers,
-        pendingApprovals: pendingRecipients + pendingSignups,
-        pendingRecipients,
-        pendingSignups,
-        pendingTransactions,
-        totalBalance: totalBalance[0]?.total || 0,
-        recentSignups24h,
-        approvalQueue: pendingRecipients + pendingSignups
-      },
-      lastUpdated: new Date().toISOString()
-    });
-  } catch (err) {
-    console.error('[ADMIN DASHBOARD STATS] Failed to fetch dashboard statistics:', err);
-    return errorResponse(res, 500, 'Failed to fetch dashboard statistics', err);
   }
 });
 
@@ -2510,8 +2090,17 @@ const start = async () => {
     console.log('✅ Connected to MongoDB');
     console.log(`📁 Database: ${mongoose.connection.db.databaseName}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔐 Admin token required: ${process.env.ADMIN_TOKEN ? 'Yes' : 'No (using default)'}`);
-    console.log(`📝 Auto approve signups: ${process.env.AUTO_APPROVE_SIGNUPS || 'true (default)'}`);
+    
+    // Ensure admin user exists
+    const adminEmail = 'javonmorgan796@gmail.com';
+    const adminUser = await User.findOne({ email: adminEmail });
+    if (adminUser && adminUser.role !== 'admin') {
+      adminUser.role = 'admin';
+      await adminUser.save();
+      console.log(`👑 Admin role assigned to: ${adminEmail}`);
+    } else if (!adminUser) {
+      console.log(`⚠️ Admin user ${adminEmail} not found. Please create this user manually.`);
+    }
     
     app.listen(PORT, () => {
       console.log(`🚀 Server listening on port ${PORT}`);
@@ -2519,19 +2108,10 @@ const start = async () => {
       console.log(`🌐 CORS origins: ${allowedOrigins.join(', ')}`);
       console.log(`✅ CORS is ENABLED for: https://fipay.onrender.com`);
       console.log(`🔐 Authentication accepts: x-user-id header, user-id header, Authorization Bearer token, or userId query parameter`);
-      console.log(`👑 Admin access methods:`);
-      console.log(`   1. Set 'x-admin' header to: ${process.env.ADMIN_TOKEN || 'admin-secret-key-change-this'}`);
-      console.log(`   2. Use Authorization: Bearer ${process.env.ADMIN_TOKEN || 'admin-secret-key-change-this'}`);
-      console.log(`   3. Login as user with role: 'admin' in database`);
-      console.log(`📋 Admin endpoints for signups:`);
-      console.log(`   GET  /api/admin/recent-signups - Recent user signups`);
-      console.log(`   GET  /api/admin/all-pending - All pending items (recipients + signups)`);
-      console.log(`   PUT  /api/admin/signup-approve/:id - Approve pending signup`);
-      console.log(`   PUT  /api/admin/signup-reject/:id - Reject pending signup`);
-      console.log(`   GET  /api/admin/dashboard-stats - Dashboard statistics`);
       console.log(`💰 Deposits now included in transactions by default`);
       console.log(`🔓 Suspended users can now login and view their data`);
       console.log(`🚫 Suspended users are restricted from making transactions`);
+      console.log(`👑 Admin endpoints available at /api/admin/*`);
     });
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB', err);
