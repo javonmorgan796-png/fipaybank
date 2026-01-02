@@ -195,10 +195,20 @@ app.get('/api/endpoints', (req, res) => {
     { method: 'GET', path: '/api/transactions', auth: true },
     { method: 'POST', path: '/api/transactions/send', auth: true },
     { method: 'GET', path: '/api/users', auth: true },
+    { method: 'GET', path: '/api/users/:id', auth: true },
+    { method: 'GET', path: '/api/users/by-email', auth: true },
+    { method: 'GET', path: '/api/user-summary', auth: true },
+    { method: 'GET', path: '/api/pending', auth: true },
+    { method: 'POST', path: '/api/pending', auth: true },
     { method: 'GET', path: '/api/admin/users', auth: true, admin: true },
     { method: 'GET', path: '/api/admin/deposits', auth: true, admin: true },
     { method: 'GET', path: '/api/admin/pending-transactions', auth: true, admin: true },
-    { method: 'GET', path: '/api/admin/stats', auth: true, admin: true }
+    { method: 'GET', path: '/api/admin/stats', auth: true, admin: true },
+    { method: 'PUT', path: '/api/admin/users/:id/suspend', auth: true, admin: true },
+    { method: 'PUT', path: '/api/deposits/:id/approve', auth: true, admin: true },
+    { method: 'PUT', path: '/api/deposits/:id/reject', auth: true, admin: true },
+    { method: 'PUT', path: '/api/admin/pending/:id/approve', auth: true, admin: true },
+    { method: 'PUT', path: '/api/admin/pending/:id/cancel', auth: true, admin: true }
   ];
   
   res.json({
@@ -758,6 +768,164 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
   }
 });
 
+// =================== SEND MONEY ENDPOINT ===================
+app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      console.log('[TRANSACTIONS:SEND] Starting send transaction', req.body);
+      
+      let { recipientType, recipientEmail, recipientDetails, amount, crypto, symbol, paymentMethod, cardId, message } = req.body;
+      
+      // Use authenticated user as sender
+      const senderId = req.userId;
+      
+      // Normalize bank fields from top-level if not provided inside recipientDetails
+      if (recipientType === 'bank' && (!recipientDetails || Object.keys(recipientDetails || {}).length === 0)) {
+        const potential = {};
+        const t = req.body || {};
+        
+        if (t.accountNumber || t.account_number || t.accountNo || t.account_no) {
+          potential.accountNumber = t.accountNumber || t.account_number || t.accountNo || t.account_no;
+        }
+        
+        if (t.accountName || t.account_name) potential.accountName = t.accountName || t.account_name;
+        if (t.username) potential.username = t.username;
+        if (t.bankName) potential.bankName = t.bankName;
+        
+        if (t.account && (t.account.number || t.account.name)) {
+          potential.accountNumber = t.account.number || potential.accountNumber;
+          potential.accountName = t.account.name || potential.accountName;
+        }
+        
+        if (Object.keys(potential).length > 0) {
+          recipientDetails = potential;
+        }
+      }
+
+      // Validation
+      const missing = [];
+      if (!recipientType) missing.push('recipientType');
+      if (amount === undefined || amount === null) missing.push('amount');
+      
+      if (missing.length > 0) {
+        const resp = { 
+          error: 'Missing required fields', 
+          missing, 
+          received: { senderId, recipientType, amount, recipientDetails } 
+        };
+        console.log('[TRANSACTIONS:SEND] Missing fields', resp);
+        throw new Error(`Missing required fields: ${missing.join(', ')}`);
+      }
+
+      // Coerce amount to number
+      amount = Number(amount);
+      if (isNaN(amount) || amount <= 0) {
+        throw new Error('Invalid amount');
+      }
+
+      recipientType = String(recipientType || 'email');
+
+      // Normalize email if provided
+      if (recipientEmail) {
+        recipientEmail = String(recipientEmail).toLowerCase().trim();
+      }
+
+      // Normalize recipient details for crypto and bank
+      recipientDetails = recipientDetails || {};
+      crypto = String(crypto || '').trim();
+      symbol = String(symbol || '').trim();
+      paymentMethod = String(paymentMethod || 'balance');
+      cardId = String(cardId || '');
+
+      console.log('[TRANSACTIONS:SEND] Processed data:', { 
+        senderId, 
+        recipientType, 
+        recipientEmail, 
+        amount, 
+        crypto, 
+        symbol, 
+        paymentMethod, 
+        cardId 
+      });
+
+      // Per-type validation
+      if (recipientType === 'email') {
+        if (!recipientEmail) {
+          throw new Error('Missing recipientEmail for recipientType=email');
+        }
+      } else if (recipientType === 'crypto') {
+        if (!recipientDetails || !recipientDetails.address) {
+          throw new Error('Missing wallet address for crypto recipient');
+        }
+      } else if (recipientType === 'bank') {
+        const d = recipientDetails || {};
+        const bankFields = [
+          'accountNumber','account_number','accountNo','account_no','account',
+          'accountName','account_name','username'
+        ];
+        
+        const hasBankField = bankFields.some(k => (d[k] !== undefined && String(d[k] || '').trim() !== '')) || 
+                            (d?.account && (d.account.number || d.account.name));
+        
+        if (!hasBankField) {
+          throw new Error('Missing bank account details (accountNumber or accountName/username)');
+        }
+      }
+
+      const sender = await User.findById(senderId).session(session);
+      if (!sender) {
+        throw new Error('Sender not found');
+      }
+
+      // Check sender balance
+      if ((sender.balance || 0) < amount) {
+        throw new Error('Insufficient balance');
+      }
+
+      if (recipientType === 'bank') {
+        recipientDetails = recipientDetails || {};
+        if (!recipientDetails.senderEmail) {
+          recipientDetails.senderEmail = sender.email;
+        }
+      }
+
+      // Prepare pending transaction payload
+      const pendingPayload = {
+        senderId: sender.id,
+        senderEmail: sender.email,
+        recipientType,
+        recipientEmail: recipientEmail || '',
+        recipientName: recipientDetails?.name || '',
+        recipientDetails: recipientDetails || {},
+        amount,
+        crypto,
+        symbol,
+        paymentMethod,
+        cardId,
+        message: String(message || '')
+      };
+
+      const pending = new PendingTransaction(pendingPayload);
+      await pending.save({ session });
+      
+      console.log(`[TRANSACTIONS:SEND] Pending transaction created: ${pending._id}`);
+      
+      return successResponse(res, { 
+        success: true, 
+        status: 'pending', 
+        pending,
+        message: 'Transaction created and pending admin approval'
+      });
+    });
+  } catch (err) {
+    console.error('[TRANSACTIONS:SEND] Error', err);
+    return errorResponse(res, 500, `Failed to send money: ${err.message}`, err);
+  } finally {
+    await session.endSession();
+  }
+});
+
 // Get user summary
 app.get('/api/user-summary', authenticateUser, async (req, res) => {
   try {
@@ -787,6 +955,55 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
   } catch (err) {
     console.error('[USER-SUMMARY] Error:', err);
     return errorResponse(res, 500, 'Failed to fetch user summary', err);
+  }
+});
+
+// Get users (for admin, returns all users; for regular users, returns their own info)
+app.get('/api/users', authenticateUser, async (req, res) => {
+  try {
+    // If user is admin, return all users
+    if (req.user.role === 'admin') {
+      const { search, page = 1, limit = 20 } = req.query;
+      const query = {};
+      
+      if (search) {
+        query.$or = [
+          { email: { $regex: search, $options: 'i' } },
+          { name: { $regex: search, $options: 'i' } }
+        ];
+      }
+      
+      const pageNum = Math.max(1, parseInt(page));
+      const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+      const skip = (pageNum - 1) * limitNum;
+      
+      const [users, total] = await Promise.all([
+        User.find(query)
+          .select('-password -__v')
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .lean(),
+        User.countDocuments(query)
+      ]);
+      
+      return successResponse(res, { 
+        users, 
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          pages: Math.ceil(total / limitNum)
+        }
+      });
+    } else {
+      // Regular users only get their own info
+      const user = await User.findById(req.userId).select('-password -__v');
+      return successResponse(res, { users: [user] });
+    }
+  } catch (err) {
+    console.error('[USERS] Error:', err);
+    return errorResponse(res, 500, 'Failed to fetch users', err);
   }
 });
 
@@ -838,6 +1055,73 @@ app.get('/api/users/by-email', authenticateUser, async (req, res) => {
   } catch (err) {
     console.error('[USER BY EMAIL] Error:', err);
     return errorResponse(res, 500, 'Failed to fetch user', err);
+  }
+});
+
+// =================== PENDING TRANSACTION ENDPOINTS ===================
+// Create pending transaction
+app.post('/api/pending', authenticateUser, restrictSuspendedUsers, async (req, res) => {
+  try {
+    let { recipientEmail, amount, message } = req.body;
+    
+    if (!recipientEmail || amount === undefined || amount === null) {
+      return errorResponse(res, 400, 'Missing required fields: recipientEmail, amount');
+    }
+    
+    amount = Number(amount);
+    if (isNaN(amount) || amount <= 0) {
+      return errorResponse(res, 400, 'Invalid amount');
+    }
+    
+    const pending = new PendingTransaction({ 
+      senderId: req.userId, 
+      senderEmail: req.user.email, 
+      recipientEmail: recipientEmail.toLowerCase().trim(), 
+      amount, 
+      message 
+    });
+    
+    await pending.save();
+    return successResponse(res, { pending }, 201);
+  } catch (err) {
+    console.error('[PENDING CREATE] Error:', err);
+    return errorResponse(res, 500, 'Failed to create pending transaction', err);
+  }
+});
+
+// Get pending transactions for current user
+app.get('/api/pending', authenticateUser, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const query = { senderId: req.userId };
+    
+    if (status) query.status = status;
+    
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+    
+    const [pendings, total] = await Promise.all([
+      PendingTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      PendingTransaction.countDocuments(query)
+    ]);
+    
+    return successResponse(res, { 
+      pendings, 
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (err) {
+    console.error('[PENDING GET] Error:', err);
+    return errorResponse(res, 500, 'Failed to fetch pending transactions', err);
   }
 });
 
@@ -1066,6 +1350,247 @@ app.get('/api/admin/pending-transactions', requireAdmin, async (req, res) => {
   }
 });
 
+// =================== ADMIN: APPROVE PENDING TRANSACTION ===================
+app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const { id } = req.params;
+      const { notes } = req.body;
+      const adminId = req.user?._id || 'admin';
+      
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new Error('Invalid pending id');
+      }
+
+      const p = await PendingTransaction.findById(id).session(session);
+      if (!p) {
+        throw new Error('Pending transaction not found');
+      }
+      
+      if (!mongoose.Types.ObjectId.isValid(String(p.senderId))) {
+        throw new Error('Invalid sender id on pending transaction');
+      }
+      
+      if (p.status !== 'pending') {
+        await PendingTransaction.deleteOne({ _id: p._id }).session(session);
+        return successResponse(res, { 
+          success: true, 
+          removed: true, 
+          reason: 'not_pending', 
+          status: p.status 
+        });
+      }
+
+      let sender = await User.findById(p.senderId).session(session);
+      if (!sender) {
+        throw new Error('Sender not found');
+      }
+
+      // For email recipient type we require the pending recipient to be approved (or existing user)
+      let recipient = null;
+      if (p.recipientType === 'email' && p.recipientEmail) {
+        const recEmail = String(p.recipientEmail).toLowerCase().trim();
+        recipient = await User.findOne({ email: recEmail }).session(session);
+        
+        if (!recipient) {
+          let pendingRecipient = await PendingRecipient.findOne({ email: recEmail }).session(session);
+          if (!pendingRecipient) {
+            pendingRecipient = new PendingRecipient({ 
+              email: recEmail, 
+              name: p.recipientName || '' 
+            });
+          }
+          
+          if (pendingRecipient.status !== 'approved') {
+            pendingRecipient.status = 'approved';
+            pendingRecipient.approvedBy = adminId;
+            pendingRecipient.approvedAt = new Date();
+            pendingRecipient.notes = notes || 'Auto-approved via transaction';
+            await pendingRecipient.save({ session });
+          }
+          
+          const defaultName = pendingRecipient.name && pendingRecipient.name.length ? 
+            pendingRecipient.name : 
+            (pendingRecipient.email.split('@')[0] || 'Recipient');
+          
+          const randomPassword = crypto.randomBytes(12).toString('hex');
+          const hashed = await bcrypt.hash(randomPassword, 10);
+          
+          await User.updateOne(
+            { email: pendingRecipient.email },
+            { 
+              $setOnInsert: { 
+                email: pendingRecipient.email, 
+                password: hashed, 
+                name: defaultName,
+                emailVerified: true
+              } 
+            },
+            { upsert: true, session }
+          );
+          
+          recipient = await User.findOne({ email: pendingRecipient.email }).session(session);
+        }
+      }
+
+      const amt = Math.abs(Number(p.amount));
+      if (!isFinite(amt) || amt <= 0) {
+        throw new Error('Invalid amount for approval');
+      }
+      
+      if ((sender.balance || 0) < amt) {
+        throw new Error('Sender has insufficient balance');
+      }
+
+      // Perform balance updates (always deduct sender)
+      await User.updateOne({ _id: sender._id }, { $inc: { balance: -amt } }, { session });
+      sender = await User.findById(sender._id).session(session);
+
+      let senderTx = null;
+      let recipientTx = null;
+
+      if (recipient) {
+        // Internal recipient: credit and create both transactions
+        await User.updateOne({ _id: recipient._id }, { $inc: { balance: amt } }, { session });
+        recipient = await User.findById(recipient._id).session(session);
+
+        senderTx = new Transaction({
+          userId: sender.id,
+          type: 'send',
+          amount: -amt,
+          counterpartyId: recipient.id,
+          counterpartyName: recipient.name,
+          counterpartyEmail: recipient.email,
+          recipientName: recipient.name,
+          recipientEmail: recipient.email,
+          recipientType: 'email',
+          counterpartyDetails: {},
+          crypto: p.crypto,
+          symbol: p.symbol,
+          status: 'completed',
+          description: p.message || `Transfer to ${recipient.email}`,
+          reference: p._id.toString()
+        });
+
+        recipientTx = new Transaction({
+          userId: recipient.id,
+          type: 'receive',
+          amount: amt,
+          counterpartyId: sender.id,
+          counterpartyName: sender.name,
+          counterpartyEmail: sender.email,
+          recipientName: sender.name,
+          recipientEmail: sender.email,
+          recipientType: 'email',
+          counterpartyDetails: {},
+          crypto: p.crypto,
+          symbol: p.symbol,
+          status: 'completed',
+          description: p.message || `Transfer from ${sender.email}`,
+          reference: p._id.toString()
+        });
+
+        await senderTx.save({ session });
+        await recipientTx.save({ session });
+      } else {
+        // External recipient (crypto wallet / bank) — only create sender tx with recipient details
+        const resolvedName = p.recipientName || 
+          (p.recipientDetails?.accountName || 
+           p.recipientDetails?.username || 
+           (p.recipientDetails?.account?.name || ''));
+        
+        senderTx = new Transaction({
+          userId: sender.id,
+          type: 'send',
+          amount: -amt,
+          counterpartyId: '',
+          counterpartyName: resolvedName || '',
+          counterpartyEmail: p.recipientEmail || '',
+          recipientName: resolvedName || '',
+          recipientEmail: p.recipientEmail || '',
+          recipientType: p.recipientType || '',
+          counterpartyDetails: p.recipientDetails || {},
+          crypto: p.crypto,
+          symbol: p.symbol,
+          status: 'completed',
+          description: p.message || `${p.recipientType} transfer`,
+          reference: p._id.toString()
+        });
+
+        await senderTx.save({ session });
+      }
+
+      // Mark pending as claimed/approved
+      p.status = 'claimed';
+      p.approvedBy = adminId;
+      p.approvedAt = new Date();
+      p.notes = notes;
+      await p.save({ session });
+
+      const freshSender = await User.findById(sender._id).select('-password -__v').lean();
+      const freshRecipient = recipient ? 
+        await User.findById(recipient._id).select('-password -__v').lean() : 
+        null;
+      
+      console.log(`[ADMIN] Pending transaction ${id} approved by ${req.user.email}`);
+      
+      return successResponse(res, {
+        success: true,
+        senderTx,
+        recipientTx,
+        pending: p,
+        sender: freshSender,
+        recipient: freshRecipient,
+        updatedSenderBalance: freshSender ? freshSender.balance : null,
+        updatedRecipientBalance: freshRecipient ? freshRecipient.balance : null
+      });
+    });
+  } catch (err) {
+    console.error('[ADMIN APPROVE PENDING] Error:', err);
+    return errorResponse(res, 500, 'Failed to approve pending transaction', err);
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Admin: cancel a pending transaction
+app.put('/api/admin/pending/:id/cancel', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+    
+    const p = await PendingTransaction.findById(id);
+    if (!p) {
+      return errorResponse(res, 404, 'Pending transaction not found');
+    }
+    
+    if (p.status !== 'pending') {
+      await PendingTransaction.deleteOne({ _id: p._id });
+      return successResponse(res, { 
+        success: true, 
+        removed: true, 
+        reason: 'not_pending', 
+        status: p.status 
+      });
+    }
+    
+    p.status = 'cancelled';
+    p.notes = notes;
+    await p.save();
+    
+    console.log(`[ADMIN] Pending transaction ${id} cancelled by ${req.user.email}`);
+    
+    return successResponse(res, { 
+      success: true, 
+      pending: p 
+    });
+  } catch (err) {
+    console.error('[ADMIN CANCEL PENDING] Error:', err);
+    return errorResponse(res, 500, 'Failed to cancel pending transaction', err);
+  }
+});
+
 // Admin: Get statistics
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   try {
@@ -1151,73 +1676,6 @@ app.put('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
   } catch (err) {
     console.error('[ADMIN SUSPEND USER] Error:', err);
     return errorResponse(res, 500, 'Failed to update user status', err);
-  }
-});
-
-// =================== PENDING TRANSACTION ENDPOINTS ===================
-// Create pending transaction
-app.post('/api/pending', authenticateUser, restrictSuspendedUsers, async (req, res) => {
-  try {
-    let { recipientEmail, amount, message } = req.body;
-    
-    if (!recipientEmail || amount === undefined || amount === null) {
-      return errorResponse(res, 400, 'Missing required fields: recipientEmail, amount');
-    }
-    
-    amount = Number(amount);
-    if (isNaN(amount) || amount <= 0) {
-      return errorResponse(res, 400, 'Invalid amount');
-    }
-    
-    const pending = new PendingTransaction({ 
-      senderId: req.userId, 
-      senderEmail: req.user.email, 
-      recipientEmail: recipientEmail.toLowerCase().trim(), 
-      amount, 
-      message 
-    });
-    
-    await pending.save();
-    return successResponse(res, { pending }, 201);
-  } catch (err) {
-    console.error('[PENDING CREATE] Error:', err);
-    return errorResponse(res, 500, 'Failed to create pending transaction', err);
-  }
-});
-
-// Get pending transactions for current user
-app.get('/api/pending', authenticateUser, async (req, res) => {
-  try {
-    const { status, page = 1, limit = 20 } = req.query;
-    const query = { senderId: req.userId };
-    
-    if (status) query.status = status;
-    
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
-    
-    const [pendings, total] = await Promise.all([
-      PendingTransaction.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      PendingTransaction.countDocuments(query)
-    ]);
-    
-    return successResponse(res, { 
-      pendings, 
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        pages: Math.ceil(total / limitNum)
-      }
-    });
-  } catch (err) {
-    console.error('[PENDING GET] Error:', err);
-    return errorResponse(res, 500, 'Failed to fetch pending transactions', err);
   }
 });
 
@@ -1308,7 +1766,8 @@ const start = async () => {
       console.log(`✅ Public test endpoint: http://localhost:${PORT}/api/public/test`);
       console.log(`🔐 Authentication via: x-user-id header or Authorization Bearer token`);
       console.log(`👑 Admin access: ${adminEmail}`);
-      console.log(`💰 Deposits endpoint: /api/deposits`);
+      console.log(`💰 Send money endpoint: POST /api/transactions/send`);
+      console.log(`📥 Deposits endpoint: /api/deposits`);
       console.log(`👥 Admin endpoints: /api/admin/*`);
       console.log(`📊 Debug endpoint: /api/debug/auth`);
       console.log(`\n✨ Server is ready! ✨\n`);
