@@ -19,7 +19,7 @@ interface UserData {
   balance: number;
   id: string;
   suspended?: boolean;
-  status?: string; // For pending users
+  status?: string;
 }
 
 const AdminPage = () => {
@@ -38,18 +38,34 @@ const AdminPage = () => {
   const [amountFilter, setAmountFilter] = useState<string>("all");
   const [pendingTransfers, setPendingTransfers] = useState<any[]>([]);
   const [pendingRecipients, setPendingRecipients] = useState<any[]>([]);
-  const [pendingUsers, setPendingUsers] = useState<UserData[]>([]); // NEW: For pending user registrations
+  const [pendingUsers, setPendingUsers] = useState<UserData[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
-  const [activeTab, setActiveTab] = useState("deposits");
  
-  // Helper function to get admin headers
-  const getAdminHeaders = () => ({
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    'x-admin': 'admin'
-  });
+  // Helper function to get headers
+  const getHeaders = (needsUserAuth = false) => {
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'x-admin': 'admin' // Always send admin header
+    };
+    
+    // Get user token from localStorage (common place to store it)
+    if (needsUserAuth) {
+      const token = localStorage.getItem('token') || 
+                    localStorage.getItem('authToken') ||
+                    sessionStorage.getItem('token');
+      
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      } else {
+        console.warn('No user token found for authenticated endpoint');
+      }
+    }
+    
+    return headers;
+  };
 
-  // Fetch ALL users (approved and pending)
+  // Fetch ALL users
   useEffect(() => {
     const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
     
@@ -58,73 +74,32 @@ const AdminPage = () => {
       try {
         console.log("🔍 Fetching users from:", `${API_BASE}/api/users`);
         
-        // Fetch approved users
+        // Try with admin header only first
         const res = await fetch(`${API_BASE}/api/users`, { 
-          headers: getAdminHeaders()
+          headers: getHeaders(false) // false = admin header only
         });
         
-        if (!res.ok) { 
-          console.error('fetch users failed', res.status); 
-          return; 
-        }
+        console.log("📊 Users API status:", res.status);
         
-        let data: any = null;
-        try {
-          const ct = res.headers.get('content-type') || '';
-          if (ct.includes('application/json')) {
-            data = await res.json();
+        // If 403, try with user auth too
+        if (res.status === 403 || res.status === 401) {
+          console.log("🔄 Trying with user authentication...");
+          const resWithAuth = await fetch(`${API_BASE}/api/users`, { 
+            headers: getHeaders(true) // true = admin + user auth
+          });
+          
+          if (resWithAuth.ok) {
+            const data = await resWithAuth.json();
+            processUserData(data);
           } else {
-            const text = await res.text();
-            try { data = JSON.parse(text); } catch { console.error('non-json users response', text); return; }
+            throw new Error(`Failed to fetch users: ${resWithAuth.status}`);
           }
-        } catch (e) { console.error('parse users response error', e); return; }
-        
-        console.log("📊 Users API response:", data);
-        
-        // Process users based on different response structures
-        let userList: UserData[] = [];
-        let pendingUserList: UserData[] = [];
-        
-        if (Array.isArray(data.users)) {
-          // Check if users have status field to separate pending vs approved
-          data.users.forEach((u: any) => {
-            const userObj: UserData = {
-              email: u.email || u.userEmail || '',
-              name: u.name || u.username || 'Unknown User',
-              balance: u.balance || u.amount || 0,
-              id: u._id || u.id || Math.random().toString(),
-              suspended: u.suspended || false,
-              status: u.status || 'approved' // Default to approved if no status
-            };
-            
-            if (u.status === 'pending' || u.approved === false || u.isPending === true) {
-              pendingUserList.push(userObj);
-            } else {
-              userList.push(userObj);
-            }
-          });
-        } else if (Array.isArray(data)) {
-          data.forEach((u: any) => {
-            const userObj: UserData = {
-              email: u.email || '',
-              name: u.name || 'Unknown',
-              balance: u.balance || 0,
-              id: u._id || u.id || '',
-              suspended: u.suspended || false,
-              status: u.status || 'approved'
-            };
-            
-            if (u.status === 'pending') {
-              pendingUserList.push(userObj);
-            } else {
-              userList.push(userObj);
-            }
-          });
+        } else if (res.ok) {
+          const data = await res.json();
+          processUserData(data);
+        } else {
+          throw new Error(`Failed to fetch users: ${res.status}`);
         }
-        
-        console.log(`✅ Approved users: ${userList.length}, Pending users: ${pendingUserList.length}`);
-        setUsers(userList);
-        setPendingUsers(pendingUserList);
         
       } catch (err) {
         console.error('fetch users error', err);
@@ -138,35 +113,86 @@ const AdminPage = () => {
       }
     };
     
+    const processUserData = (data: any) => {
+      console.log("📊 Users API response:", data);
+      
+      let userList: UserData[] = [];
+      let pendingUserList: UserData[] = [];
+      
+      if (Array.isArray(data.users)) {
+        data.users.forEach((u: any) => {
+          const userObj: UserData = {
+            email: u.email || u.userEmail || '',
+            name: u.name || u.username || 'Unknown User',
+            balance: u.balance || u.amount || 0,
+            id: u._id || u.id || Math.random().toString(),
+            suspended: u.suspended || false,
+            status: u.status || 'approved'
+          };
+          
+          if (u.status === 'pending' || u.approved === false || u.isPending === true) {
+            pendingUserList.push(userObj);
+          } else {
+            userList.push(userObj);
+          }
+        });
+      } else if (Array.isArray(data)) {
+        data.forEach((u: any) => {
+          const userObj: UserData = {
+            email: u.email || '',
+            name: u.name || 'Unknown',
+            balance: u.balance || 0,
+            id: u._id || u.id || '',
+            suspended: u.suspended || false,
+            status: u.status || 'approved'
+          };
+          
+          if (u.status === 'pending') {
+            pendingUserList.push(userObj);
+          } else {
+            userList.push(userObj);
+          }
+        });
+      }
+      
+      console.log(`✅ Approved users: ${userList.length}, Pending users: ${pendingUserList.length}`);
+      setUsers(userList);
+      setPendingUsers(pendingUserList);
+    };
+    
     fetchAllUsers();
   }, []);
 
-  // Also try to fetch from pending users endpoint
+  // Also fetch from specific pending users endpoint
   useEffect(() => {
     const fetchPendingUsers = async () => {
       try {
         const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
         
-        // Try different endpoints for pending users
+        // Try common pending user endpoints
         const endpoints = [
           '/api/admin/pending-users',
           '/api/users/pending',
-          '/api/pending-users'
+          '/api/pending-users',
+          '/api/admin/pendingUsers'
         ];
         
         for (const endpoint of endpoints) {
           try {
             const res = await fetch(`${API_BASE}${endpoint}`, {
-              headers: getAdminHeaders()
+              headers: getHeaders(false)
             });
             
             if (res.ok) {
               const data = await res.json();
               console.log(`✅ Found pending users at ${endpoint}:`, data);
               
-              if (Array.isArray(data.users) || Array.isArray(data)) {
-                const usersArray = Array.isArray(data.users) ? data.users : data;
-                const pendingList = usersArray.map((u: any) => ({
+              if (Array.isArray(data.users) || Array.isArray(data.pendingUsers) || Array.isArray(data)) {
+                const usersArray = Array.isArray(data.users) ? data.users : 
+                                 Array.isArray(data.pendingUsers) ? data.pendingUsers : 
+                                 data;
+                
+                const newPendingUsers = usersArray.map((u: any) => ({
                   email: u.email || '',
                   name: u.name || 'Unknown',
                   balance: 0,
@@ -175,13 +201,23 @@ const AdminPage = () => {
                   status: 'pending'
                 }));
                 
-                setPendingUsers(prev => [...prev, ...pendingList]);
+                setPendingUsers(prev => {
+                  // Avoid duplicates
+                  const existingIds = new Set(prev.map(u => u.id));
+                  const uniqueNewUsers = newPendingUsers.filter((u: UserData) => !existingIds.has(u.id));
+                  return [...prev, ...uniqueNewUsers];
+                });
+                
+                toast({
+                  title: "Pending Users Found",
+                  description: `Found ${newPendingUsers.length} pending users`
+                });
+                
                 break;
               }
             }
           } catch (err) {
-            // Continue to next endpoint
-            console.log(`Endpoint ${endpoint} not available`);
+            console.log(`Endpoint ${endpoint} not available or error:`, err);
           }
         }
       } catch (err) {
@@ -211,25 +247,37 @@ const AdminPage = () => {
   const pendingDeposits = allDeposits.filter(d => d.status === 'pending');
   const processedDeposits = allDeposits.filter(d => d.status !== 'pending');
 
+  // Fetch pending transfers and recipients
   useEffect(() => {
-    const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-    const fetchPendingTransfers = async () => {
+    const fetchPendingItems = async () => {
       try {
+        const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
         const [res1, res2] = await Promise.all([
-          fetch(`${API_BASE}/api/admin/pending`, { headers: getAdminHeaders() }),
-          fetch(`${API_BASE}/api/admin/pending-recipient`, { headers: getAdminHeaders() })
+          fetch(`${API_BASE}/api/admin/pending`, { headers: getHeaders(false) }),
+          fetch(`${API_BASE}/api/admin/pending-recipient`, { headers: getHeaders(false) })
         ]);
+        
         if (res1.ok) {
           const data = await res1.json();
           setPendingTransfers(data.pendings || []);
+          console.log("Pending transfers:", data.pendings);
+        } else {
+          console.warn("Failed to fetch pending transfers:", res1.status);
         }
+        
         if (res2.ok) {
           const data2 = await res2.json();
           setPendingRecipients(data2.pendingRecipients || []);
+          console.log("Pending recipients:", data2.pendingRecipients);
+        } else {
+          console.warn("Failed to fetch pending recipients:", res2.status);
         }
-      } catch (err) { console.error('fetch pending items error', err); }
+      } catch (err) { 
+        console.error('fetch pending items error', err); 
+      }
     };
-    fetchPendingTransfers();
+    
+    fetchPendingItems();
   }, []);
 
   // Apply filters to deposits
@@ -265,7 +313,7 @@ const AdminPage = () => {
   const paginatedUsers = paginate(filteredUsers, usersPage);
   const paginatedPendingDeposits = paginate(filteredPendingDeposits, depositsPage);
   const paginatedProcessedDeposits = paginate(filteredProcessedDeposits, historyPage);
-  const paginatedPendingUsers = paginate(pendingUsers, 1); // For pending users tab
+  const paginatedPendingUsers = paginate(pendingUsers, 1);
 
   const handleApprove = (depositId: string) => {
     approveDeposit(depositId);
@@ -294,24 +342,18 @@ const AdminPage = () => {
       const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
       const res = await fetch(`${API_BASE}/api/admin/users/${userId}/suspend`, {
         method: 'PUT',
-        headers: getAdminHeaders(),
+        headers: getHeaders(true), // Needs both admin and user auth
         body: JSON.stringify({ suspended: !currentSuspended })
       });
       
       let data: any = null;
       try {
-        const ct = res.headers.get('content-type') || '';
-        if (ct.includes('application/json')) {
-          data = await res.json();
-        } else {
-          const text = await res.text();
-          try { data = JSON.parse(text); } catch { data = { error: text }; }
-        }
+        data = await res.json();
       } catch {
         data = { error: 'Invalid response format' };
       }
       
-      if (res.ok && data && (data.user || data.success)) {
+      if (res.ok && (data.user || data.success)) {
         setUsers(prev => prev.map(u => 
           u.id === userId ? { ...u, suspended: !currentSuspended } : u
         ));
@@ -320,7 +362,7 @@ const AdminPage = () => {
           description: currentSuspended ? 'User can access the account.' : 'User access is blocked.'
         });
       } else {
-        const message = (data && data.error) ? data.error : `Request failed (${res.status})`;
+        const message = data?.error || `Request failed (${res.status})`;
         toast({ title: 'Error', description: message, variant: 'destructive' });
       }
     } catch (err) {
@@ -335,12 +377,11 @@ const AdminPage = () => {
       const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
       const res = await fetch(`${API_BASE}/api/admin/users/${pendingUserId}/approve`, {
         method: 'PUT',
-        headers: getAdminHeaders(),
+        headers: getHeaders(true),
         body: JSON.stringify({ approved: true })
       });
       
       if (res.ok) {
-        // Remove from pending, add to approved
         const pendingUser = pendingUsers.find(u => u.id === pendingUserId);
         if (pendingUser) {
           setPendingUsers(prev => prev.filter(u => u.id !== pendingUserId));
@@ -362,7 +403,7 @@ const AdminPage = () => {
       const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
       const res = await fetch(`${API_BASE}/api/admin/users/${pendingUserId}/reject`, {
         method: 'DELETE',
-        headers: getAdminHeaders()
+        headers: getHeaders(true)
       });
       
       if (res.ok) {
@@ -462,7 +503,7 @@ const AdminPage = () => {
           </div>
         </div>
 
-        <Tabs defaultValue="pending-users" className="w-full" onValueChange={setActiveTab}>
+        <Tabs defaultValue="pending-users" className="w-full">
           <TabsList className="w-full grid grid-cols-4 mb-4">
             <TabsTrigger value="pending-users" className="text-xs">
               Pending Users ({pendingUsers.length})
@@ -478,7 +519,7 @@ const AdminPage = () => {
             </TabsTrigger>
           </TabsList>
 
-          {/* PENDING USERS TAB - NEW */}
+          {/* PENDING USERS TAB */}
           <TabsContent value="pending-users" className="space-y-3">
             {isLoadingUsers ? (
               <div className="text-center py-12">
@@ -559,7 +600,7 @@ const AdminPage = () => {
               </Select>
             </div>
 
-            {paginatedPendingDeposits.length === 0 && pendingTransfers.length === 0 ? (
+            {paginatedPendingDeposits.length === 0 && pendingTransfers.length === 0 && pendingRecipients.length === 0 ? (
               <div className="text-center py-12 bg-card rounded-2xl border border-border">
                 <Clock className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">No pending items</p>
@@ -621,7 +662,10 @@ const AdminPage = () => {
                         onClick={async () => {
                           try {
                             const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { method: 'PUT', headers: getAdminHeaders() });
+                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/approve`, { 
+                              method: 'PUT', 
+                              headers: getHeaders(true) 
+                            });
                             const data = await res.json();
                             if (res.ok) {
                               toast({ title: 'Transfer Approved', description: 'Transfer completed and balances updated.' });
@@ -629,7 +673,10 @@ const AdminPage = () => {
                             } else {
                               toast({ title: 'Error', description: data.error || 'Failed to approve', variant: 'destructive' });
                             }
-                          } catch (err) { console.error(err); toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); }
+                          } catch (err) { 
+                            console.error(err); 
+                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
+                          }
                         }}
                         size="sm"
                         className="flex-1 bg-green-500 hover:bg-green-600 h-9"
@@ -640,7 +687,10 @@ const AdminPage = () => {
                         onClick={async () => {
                           try {
                             const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
-                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { method: 'PUT', headers: getAdminHeaders() });
+                            const res = await fetch(`${API_BASE}/api/admin/pending/${t._id}/cancel`, { 
+                              method: 'PUT', 
+                              headers: getHeaders(true) 
+                            });
                             const data = await res.json();
                             if (res.ok) {
                               toast({ title: 'Transfer Cancelled', description: 'Transfer has been cancelled.', variant: 'destructive' });
@@ -648,7 +698,79 @@ const AdminPage = () => {
                             } else {
                               toast({ title: 'Error', description: data.error || 'Failed to cancel', variant: 'destructive' });
                             }
-                          } catch (err) { console.error(err); toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); }
+                          } catch (err) { 
+                            console.error(err); 
+                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
+                          }
+                        }}
+                        variant="destructive"
+                        size="sm"
+                        className="flex-1 h-9"
+                      >
+                        <X className="w-4 h-4 mr-1" /> Reject
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Pending Recipients */}
+                {pendingRecipients.map((r) => (
+                  <div key={r._id} className="p-4 rounded-2xl bg-card border border-border animate-fade-in">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="font-semibold text-foreground text-sm">{r.email}</p>
+                        <p className="text-xs text-muted-foreground">{r.name || ''}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-foreground">Status: {r.status}</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-3">{formatDate(r.createdAt)}</p>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={async () => {
+                          try {
+                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
+                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/approve`, { 
+                              method: 'PUT', 
+                              headers: getHeaders(true) 
+                            });
+                            const data = await res.json();
+                            if (res.ok) {
+                              toast({ title: 'Recipient Approved', description: 'Recipient approved and user created.' });
+                              setPendingRecipients(prev => prev.filter(p => p._id !== r._id));
+                            } else {
+                              toast({ title: 'Error', description: data.error || 'Failed to approve recipient', variant: 'destructive' });
+                            }
+                          } catch (err) { 
+                            console.error(err); 
+                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
+                          }
+                        }}
+                        size="sm"
+                        className="flex-1 bg-green-500 hover:bg-green-600 h-9"
+                      >
+                        <Check className="w-4 h-4 mr-1" /> Approve
+                      </Button>
+                      <Button
+                        onClick={async () => {
+                          try {
+                            const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
+                            const res = await fetch(`${API_BASE}/api/admin/pending-recipient/${r._id}/reject`, { 
+                              method: 'PUT', 
+                              headers: getHeaders(true) 
+                            });
+                            const data = await res.json();
+                            if (res.ok) {
+                              toast({ title: 'Recipient Rejected', description: 'Recipient has been rejected.', variant: 'destructive' });
+                              setPendingRecipients(prev => prev.filter(p => p._id !== r._id));
+                            } else {
+                              toast({ title: 'Error', description: data.error || 'Failed to reject', variant: 'destructive' });
+                            }
+                          } catch (err) { 
+                            console.error(err); 
+                            toast({ title: 'Error', description: 'Network error', variant: 'destructive' }); 
+                          }
                         }}
                         variant="destructive"
                         size="sm"
@@ -689,6 +811,15 @@ const AdminPage = () => {
               <div className="text-center py-12 bg-card rounded-2xl border border-border">
                 <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">No active users found</p>
+                <Button 
+                  onClick={() => window.location.reload()} 
+                  variant="outline" 
+                  size="sm" 
+                  className="mt-3"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Refresh
+                </Button>
               </div>
             ) : (
               <div className="space-y-2">
