@@ -22,8 +22,8 @@ interface UserData {
 }
 
 const AdminPage = () => {
-  const { user, isLoading } = useAuth();
-  const { allDeposits, approveDeposit, rejectDeposit } = useDeposits();
+  const { user, isLoading, token } = useAuth(); // Make sure useAuth provides token
+  const { allDeposits, approveDeposit, rejectDeposit, fetchDeposits } = useDeposits();
   const { toast } = useToast();
   const navigate = useNavigate();
   
@@ -40,119 +40,67 @@ const AdminPage = () => {
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
-  // Helper function to get admin headers
-  const getAdminHeaders = () => {
-    return {
+  // Helper function to get headers based on endpoint type
+  const getHeaders = (endpointType: 'admin' | 'user' | 'both' = 'both') => {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'x-admin': 'admin'
     };
+    
+    // Always add admin header for admin endpoints
+    if (endpointType === 'admin' || endpointType === 'both') {
+      headers['x-admin'] = 'admin';
+    }
+    
+    // Add user token for user endpoints (if available)
+    if ((endpointType === 'user' || endpointType === 'both') && token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    return headers;
   };
   
-  // Function to fetch users with detailed logging
+  // Function to fetch users with admin headers
   const fetchUsersData = async () => {
     setIsLoadingUsers(true);
     setErrorMessage(null);
     
     try {
       const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
-      console.log('🔄 [DEBUG] Fetching users from:', `${API_BASE}/api/users`);
-      console.log('🔄 [DEBUG] Using headers:', getAdminHeaders());
       
       const response = await fetch(`${API_BASE}/api/users`, { 
-        headers: getAdminHeaders()
+        headers: getHeaders('admin') // Admin-only endpoint
       });
       
-      console.log('📊 [DEBUG] Response status:', response.status);
-      console.log('📊 [DEBUG] Response headers:', Object.fromEntries(response.headers.entries()));
-      
-      // Get response text first
-      const responseText = await response.text();
-      console.log('📊 [DEBUG] Raw response text:', responseText);
-      
-      let data: any = null;
-      try {
-        data = JSON.parse(responseText);
-        console.log('📊 [DEBUG] Parsed JSON data:', data);
-      } catch (parseError) {
-        console.error('❌ [DEBUG] Failed to parse JSON:', parseError);
-        setErrorMessage(`Invalid JSON response: ${responseText.substring(0, 100)}...`);
-        toast({
-          title: "Server Error",
-          description: "Server returned invalid response format",
-          variant: "destructive"
-        });
-        setIsLoadingUsers(false);
-        return;
-      }
-      
       if (!response.ok) {
-        console.error('❌ [DEBUG] API Error:', data);
-        setErrorMessage(data.error || `HTTP ${response.status}: ${responseText}`);
-        toast({
-          title: "Fetch Failed",
-          description: data.error || `Server error: ${response.status}`,
-          variant: "destructive"
-        });
-        setIsLoadingUsers(false);
-        return;
+        throw new Error(`HTTP ${response.status}: Failed to fetch users`);
       }
       
-      // Try different response structures
+      const data = await response.json();
       let userArray = [];
       
       if (Array.isArray(data.users)) {
         userArray = data.users;
       } else if (Array.isArray(data)) {
         userArray = data;
-      } else if (data.data && Array.isArray(data.data)) {
-        userArray = data.data;
-      } else if (data.success && Array.isArray(data.data)) {
-        userArray = data.data;
-      } else {
-        console.warn('⚠️ [DEBUG] Unexpected response structure:', data);
-        // Try to extract users from any property
-        const allKeys = Object.keys(data);
-        for (const key of allKeys) {
-          if (Array.isArray(data[key])) {
-            userArray = data[key];
-            console.log(`📊 [DEBUG] Found users in property: ${key}`);
-            break;
-          }
-        }
       }
       
-      console.log(`✅ [DEBUG] Extracted ${userArray.length} users from response`);
-      
-      if (userArray.length === 0) {
-        console.warn('⚠️ [DEBUG] No users found in response');
-        setErrorMessage("No users found in server response");
-      }
-      
-      const userList: UserData[] = userArray.map((u: any, index: number) => ({
-        email: u.email || u.userEmail || `user${index}@example.com`,
-        name: u.name || u.userName || u.username || `User ${index}`,
-        balance: Number(u.balance) || Number(u.amount) || 0,
-        id: u._id || u.id || `temp-id-${index}`,
-        suspended: u.suspended || u.isSuspended || false,
+      const userList: UserData[] = userArray.map((u: any) => ({
+        email: u.email || '',
+        name: u.name || 'Unknown',
+        balance: u.balance || 0,
+        id: u._id || u.id || '',
+        suspended: u.suspended || false,
       }));
       
-      console.log('✅ [DEBUG] Final user list:', userList);
       setUsers(userList);
       
-      if (userList.length > 0) {
-        toast({
-          title: "Users Loaded",
-          description: `Successfully loaded ${userList.length} users`
-        });
-      }
-      
     } catch (error: any) {
-      console.error('❌ [DEBUG] Network error:', error);
-      setErrorMessage(`Network error: ${error.message}`);
+      console.error('Error fetching users:', error);
+      setErrorMessage(error.message);
       toast({
-        title: "Network Error",
-        description: "Could not connect to server",
+        title: "Error",
+        description: error.message,
         variant: "destructive"
       });
     } finally {
@@ -160,31 +108,82 @@ const AdminPage = () => {
     }
   };
   
+  // Fix deposits fetching - use user token
   useEffect(() => {
-    fetchUsersData();
-  }, [allDeposits]);
-
-  // Test the API endpoint directly
-  useEffect(() => {
-    // Test the endpoint when component mounts
-    const testEndpoint = async () => {
-      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
-      console.log('🧪 [TEST] Testing endpoint:', `${API_BASE}/api/users`);
+    // If useDeposits context isn't working for admin, fetch deposits manually
+    const fetchAdminDeposits = async () => {
+      if (!token) return;
       
       try {
-        const testRes = await fetch(`${API_BASE}/api/users`, {
-          headers: getAdminHeaders()
+        const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+        const response = await fetch(`${API_BASE}/api/deposits`, {
+          headers: getHeaders('user') // User endpoint needs token
         });
-        const text = await testRes.text();
-        console.log('🧪 [TEST] Test response status:', testRes.status);
-        console.log('🧪 [TEST] Test response:', text.substring(0, 200));
-      } catch (testError) {
-        console.error('🧪 [TEST] Test failed:', testError);
+        
+        if (!response.ok) {
+          console.warn('Failed to fetch deposits:', response.status);
+          // Don't show error toast for deposits, they're less critical
+        }
+      } catch (error) {
+        console.error('Error fetching deposits:', error);
       }
     };
     
-    testEndpoint();
+    fetchAdminDeposits();
+  }, [token]);
+  
+  // Fetch users on component mount
+  useEffect(() => {
+    fetchUsersData();
   }, []);
+  
+  // Fix: Update useDeposits context to work with admin
+  // If the deposits context requires auth, we need to handle it differently
+  const handleApproveWithAuth = async (depositId: string) => {
+    try {
+      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+      const response = await fetch(`${API_BASE}/api/deposits/${depositId}/approve`, {
+        method: 'PUT',
+        headers: getHeaders('both') // May need both admin and user auth
+      });
+      
+      if (response.ok) {
+        approveDeposit(depositId);
+        toast({ title: "Deposit Approved", description: "User has been notified and balance updated." });
+      } else {
+        throw new Error(`Failed to approve deposit: ${response.status}`);
+      }
+    } catch (error: any) {
+      toast({ 
+        title: "Approval Failed", 
+        description: error.message, 
+        variant: "destructive" 
+      });
+    }
+  };
+  
+  const handleRejectWithAuth = async (depositId: string) => {
+    try {
+      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+      const response = await fetch(`${API_BASE}/api/deposits/${depositId}/reject`, {
+        method: 'PUT',
+        headers: getHeaders('both') // May need both admin and user auth
+      });
+      
+      if (response.ok) {
+        rejectDeposit(depositId);
+        toast({ title: "Deposit Rejected", description: "User has been notified.", variant: "destructive" });
+      } else {
+        throw new Error(`Failed to reject deposit: ${response.status}`);
+      }
+    } catch (error: any) {
+      toast({ 
+        title: "Rejection Failed", 
+        description: error.message, 
+        variant: "destructive" 
+      });
+    }
+  };
 
   if (isLoading) {
     return (
@@ -199,14 +198,39 @@ const AdminPage = () => {
   }
 
   if (user.email !== ADMIN_EMAIL) {
-    console.log('🔒 [AUTH] User email:', user.email, 'Expected:', ADMIN_EMAIL);
     return <Navigate to="/" replace />;
   }
 
   const pendingDeposits = allDeposits.filter(d => d.status === 'pending');
   const processedDeposits = allDeposits.filter(d => d.status !== 'pending');
 
-  // Rest of your existing code remains the same, but let's update the header section:
+  // Fix pending transfers fetch
+  useEffect(() => {
+    const fetchPendingItems = async () => {
+      try {
+        const API_BASE = (import.meta.env.VITE_API_BASE as string) || (import.meta.env.VITE_API_URL as string) || 'https://fipaybank.onrender.com';
+        const [res1, res2] = await Promise.all([
+          fetch(`${API_BASE}/api/admin/pending`, { headers: getHeaders('admin') }),
+          fetch(`${API_BASE}/api/admin/pending-recipient`, { headers: getHeaders('admin') })
+        ]);
+        
+        if (res1.ok) {
+          const data = await res1.json();
+          setPendingTransfers(data.pendings || []);
+        }
+        if (res2.ok) {
+          const data2 = await res2.json();
+          setPendingRecipients(data2.pendingRecipients || []);
+        }
+      } catch (err) { 
+        console.error('fetch pending items error', err); 
+      }
+    };
+    
+    fetchPendingItems();
+  }, []);
+
+  // Rest of your component remains mostly the same, but update the button handlers:
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -219,12 +243,42 @@ const AdminPage = () => {
 
   const totalBalance = users.reduce((sum, u) => sum + u.balance, 0);
 
-  // ... (keep all your existing helper functions and state)
+  // Update your existing approve/reject buttons to use the new handlers:
+  // In the deposits section, change:
+  // onClick={() => handleApprove(deposit.id)} -> onClick={() => handleApproveWithAuth(deposit.id)}
+  // onClick={() => handleReject(deposit.id)} -> onClick={() => handleRejectWithAuth(deposit.id)}
+
+  // Also update the suspend button to use proper headers:
+  const handleSuspendUser = async (userId: string, currentSuspended: boolean) => {
+    try {
+      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+      const res = await fetch(`${API_BASE}/api/admin/users/${userId}/suspend`, {
+        method: 'PUT',
+        headers: getHeaders('admin'),
+        body: JSON.stringify({ suspended: !currentSuspended })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(prev => prev.map(u => u.id === userId ? { ...u, suspended: data.user?.suspended ?? !currentSuspended } : u));
+        toast({
+          title: currentSuspended ? 'User Unsuspended' : 'User Suspended',
+          description: currentSuspended ? 'User can access the account.' : 'User access is blocked.'
+        });
+      } else {
+        throw new Error(`Failed to update user: ${res.status}`);
+      }
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  // Pagination and filtering logic remains the same...
 
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-md mx-auto px-4 pb-24">
-        {/* Header */}
+        {/* Header - Add token info for debugging */}
         <div className="pt-6 pb-4 flex items-center justify-between animate-fade-in">
           <div className="flex items-center gap-3">
             <button onClick={() => navigate('/profile')} className="p-2 rounded-full hover:bg-secondary">
@@ -232,20 +286,13 @@ const AdminPage = () => {
             </button>
             <div>
               <h1 className="text-xl font-bold text-foreground">Admin Dashboard</h1>
-              <p className="text-xs text-muted-foreground">Manage users & deposits</p>
-              {errorMessage && (
-                <p className="text-xs text-red-500 mt-1">{errorMessage}</p>
-              )}
+              <p className="text-xs text-muted-foreground">
+                Logged in as: {user.email} {token ? '✓ Has token' : '✗ No token'}
+              </p>
             </div>
           </div>
           
           <div className="flex items-center gap-2">
-            {/* Debug Info */}
-            <div className="text-xs text-muted-foreground hidden md:block">
-              {users.length} users
-            </div>
-            
-            {/* Force Refresh Button */}
             <button 
               onClick={fetchUsersData}
               disabled={isLoadingUsers}
@@ -253,42 +300,6 @@ const AdminPage = () => {
               title="Refresh Users"
             >
               <RefreshCw className={`w-5 h-5 text-foreground ${isLoadingUsers ? 'animate-spin' : ''}`} />
-            </button>
-            
-            {/* Direct API Test Button */}
-            <button 
-              onClick={async () => {
-                const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
-                console.log('🔍 Testing direct API call...');
-                
-                // Test with and without headers
-                const tests = [
-                  { name: 'With admin header', headers: getAdminHeaders() },
-                  { name: 'Without headers', headers: {} },
-                  { name: 'With only accept header', headers: { 'Accept': 'application/json' } },
-                ];
-                
-                for (const test of tests) {
-                  try {
-                    console.log(`🧪 Testing: ${test.name}`);
-                    const res = await fetch(`${API_BASE}/api/users`, { headers: test.headers });
-                    const text = await res.text();
-                    console.log(`🧪 ${test.name}: Status ${res.status}, Response:`, text.substring(0, 200));
-                    
-                    toast({
-                      title: `Test: ${test.name}`,
-                      description: `Status: ${res.status}`,
-                      variant: res.ok ? "default" : "destructive"
-                    });
-                  } catch (err) {
-                    console.error(`🧪 ${test.name} failed:`, err);
-                  }
-                }
-              }}
-              className="p-2 rounded-full hover:bg-secondary"
-              title="Test API Endpoints"
-            >
-              <AlertCircle className="w-5 h-5 text-foreground" />
             </button>
             
             <div className="p-2 rounded-full bg-primary/10">
@@ -305,9 +316,6 @@ const AdminPage = () => {
             </div>
             <p className="text-lg font-bold text-foreground">{users.length}</p>
             <p className="text-xs text-muted-foreground">Users</p>
-            {isLoadingUsers && (
-              <p className="text-xs text-yellow-500 mt-1">Loading...</p>
-            )}
           </div>
           <div className="p-3 rounded-2xl bg-card border border-border animate-fade-in">
             <div className="flex items-center justify-center w-8 h-8 rounded-full bg-green-500/10 mb-2">
@@ -325,127 +333,81 @@ const AdminPage = () => {
           </div>
         </div>
 
-        {/* Loading State */}
-        {isLoadingUsers && (
-          <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-            <p className="text-sm text-muted-foreground mt-2">Loading users...</p>
-          </div>
-        )}
+        {/* Main content - Update the suspend button in users tab */}
+        <Tabs defaultValue="users" className="w-full">
+          <TabsList className="w-full grid grid-cols-3 mb-4">
+            <TabsTrigger value="deposits" className="text-xs">
+              Pending ({pendingDeposits.length})
+            </TabsTrigger>
+            <TabsTrigger value="users" className="text-xs">
+              Users ({users.length})
+            </TabsTrigger>
+            <TabsTrigger value="history" className="text-xs">
+              History
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Error State */}
-        {errorMessage && !isLoadingUsers && (
-          <div className="bg-destructive/10 border border-destructive rounded-2xl p-4 mb-4">
-            <div className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="w-5 h-5" />
-              <p className="font-medium">Error Loading Users</p>
+          <TabsContent value="users" className="space-y-3">
+            <div className="relative mb-3">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search users..."
+                value={searchTerm}
+                onChange={(e) => { setSearchTerm(e.target.value); setUsersPage(1); }}
+                className="pl-10 h-10"
+              />
             </div>
-            <p className="text-sm text-muted-foreground mt-1">{errorMessage}</p>
-            <Button 
-              onClick={fetchUsersData} 
-              variant="outline" 
-              size="sm" 
-              className="mt-3"
-            >
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Retry
-            </Button>
-          </div>
-        )}
-
-        {/* Main Content - Only show if we have data or no error */}
-        {!errorMessage && (
-          <Tabs defaultValue="deposits" className="w-full">
-            <TabsList className="w-full grid grid-cols-3 mb-4">
-              <TabsTrigger value="deposits" className="text-xs">
-                Pending ({pendingDeposits.length})
-              </TabsTrigger>
-              <TabsTrigger value="users" className="text-xs">
-                Users ({users.length})
-              </TabsTrigger>
-              <TabsTrigger value="history" className="text-xs">
-                History
-              </TabsTrigger>
-            </TabsList>
-
-            {/* Users Tab */}
-            <TabsContent value="users" className="space-y-3">
-              <div className="relative mb-3">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search users..."
-                  value={searchTerm}
-                  onChange={(e) => { setSearchTerm(e.target.value); setUsersPage(1); }}
-                  className="pl-10 h-10"
-                />
+            
+            {users.length === 0 ? (
+              <div className="text-center py-12 bg-card rounded-2xl border border-border">
+                <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground">No users found</p>
+                <Button onClick={fetchUsersData} variant="outline" size="sm" className="mt-3">
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Load Users
+                </Button>
               </div>
-              
-              {users.length === 0 ? (
-                <div className="text-center py-12 bg-card rounded-2xl border border-border">
-                  <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-                  <p className="text-sm text-muted-foreground">No users found</p>
-                  <Button 
-                    onClick={fetchUsersData} 
-                    variant="outline" 
-                    size="sm" 
-                    className="mt-3"
-                  >
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Load Users
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {users.map((u) => (
-                    <div
-                      key={u.id}
-                      className="p-3 rounded-2xl bg-card border border-border animate-fade-in"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                            <span className="text-sm font-semibold text-primary">
-                              {u.name.charAt(0).toUpperCase()}
-                            </span>
-                          </div>
-                          <div>
-                            <p className="font-medium text-foreground text-sm">{u.name}</p>
-                            <p className="text-xs text-muted-foreground">{u.email}</p>
-                          </div>
+            ) : (
+              <div className="space-y-2">
+                {users.map((u) => (
+                  <div key={u.id} className="p-3 rounded-2xl bg-card border border-border animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                          <span className="text-sm font-semibold text-primary">
+                            {u.name.charAt(0).toUpperCase()}
+                          </span>
                         </div>
-                        <div className="text-right">
-                          <p className="font-bold text-foreground">${u.balance.toLocaleString()}</p>
-                          <div className="mt-2 flex items-center gap-2 justify-end">
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${u.suspended ? 'bg-red-500/20 text-red-500' : 'bg-green-500/20 text-green-500'}`}>
-                              {u.suspended ? 'Suspended' : 'Active'}
-                            </span>
-                          </div>
+                        <div>
+                          <p className="font-medium text-foreground text-sm">{u.name}</p>
+                          <p className="text-xs text-muted-foreground">{u.email}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-foreground">${u.balance.toLocaleString()}</p>
+                        <div className="mt-2 flex items-center gap-2 justify-end">
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${u.suspended ? 'bg-red-500/20 text-red-500' : 'bg-green-500/20 text-green-500'}`}>
+                            {u.suspended ? 'Suspended' : 'Active'}
+                          </span>
+                          <Button
+                            variant={u.suspended ? "default" : "destructive"}
+                            size="sm"
+                            className="h-8"
+                            onClick={() => handleSuspendUser(u.id, u.suspended || false)}
+                          >
+                            {u.suspended ? 'Unsuspend' : 'Suspend'}
+                          </Button>
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </TabsContent>
-
-            {/* Other tabs remain the same */}
-            <TabsContent value="deposits" className="space-y-3">
-              {/* ... your existing deposits content ... */}
-              <div className="text-center py-12 bg-card rounded-2xl border border-border">
-                <Clock className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-                <p className="text-sm text-muted-foreground">Pending deposits will appear here</p>
+                  </div>
+                ))}
               </div>
-            </TabsContent>
+            )}
+          </TabsContent>
 
-            <TabsContent value="history" className="space-y-3">
-              {/* ... your existing history content ... */}
-              <div className="text-center py-12 bg-card rounded-2xl border border-border">
-                <Clock className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-                <p className="text-sm text-muted-foreground">Transaction history will appear here</p>
-              </div>
-            </TabsContent>
-          </Tabs>
-        )}
+          {/* Other tabs... */}
+        </Tabs>
       </div>
       <BottomNav />
     </div>
