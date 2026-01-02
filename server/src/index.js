@@ -396,19 +396,85 @@ const restrictSuspendedUsers = (req, res, next) => {
   next();
 };
 
-// Admin middleware
+// FIXED: Admin middleware with proper token validation
 const requireAdmin = async (req, res, next) => {
   try {
-    const adminHeader = req.headers['x-admin'] || req.headers['authorization'];
+    console.log('[ADMIN] Admin access attempt detected');
     
-    // For now, using simple check - implement proper admin authentication
-    if (!adminHeader) {
-      return errorResponse(res, 403, 'Admin access required');
+    // Get admin token from header
+    const adminToken = req.headers['x-admin'];
+    const authHeader = req.headers['authorization'];
+    
+    // Check if admin token exists in environment
+    const validAdminToken = process.env.ADMIN_TOKEN || 'admin-secret-key-change-this';
+    
+    console.log('[ADMIN] Checking credentials:', {
+      hasXAdmin: !!adminToken,
+      hasAuthHeader: !!authHeader,
+      adminTokenFromEnv: validAdminToken ? 'present' : 'missing'
+    });
+    
+    // Check for admin token in x-admin header
+    if (adminToken && adminToken === validAdminToken) {
+      console.log('[ADMIN] Access granted via x-admin header');
+      req.isAdmin = true;
+      return next();
     }
-
-    // You should implement proper admin token validation here
-    next();
+    
+    // Check for Bearer token in Authorization header
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      if (token === validAdminToken) {
+        console.log('[ADMIN] Access granted via Authorization header');
+        req.isAdmin = true;
+        return next();
+      }
+    }
+    
+    // Also check for admin user role (if user is logged in)
+    let userId = req.headers['x-user-id'] || req.headers['user-id'];
+    
+    // Try to extract from query or body
+    if (!userId) {
+      userId = req.query.userId || req.body.userId;
+    }
+    
+    // Try to extract from Authorization header if it contains a valid ObjectId
+    if (!userId && authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      if (mongoose.Types.ObjectId.isValid(token)) {
+        userId = token;
+      }
+    }
+    
+    if (userId && mongoose.Types.ObjectId.isValid(userId.toString().trim())) {
+      const cleanUserId = userId.toString().trim();
+      const user = await User.findById(cleanUserId);
+      
+      if (user && user.role === 'admin') {
+        console.log('[ADMIN] Access granted via admin role:', user.email);
+        req.isAdmin = true;
+        req.adminUser = user;
+        return next();
+      } else if (user) {
+        console.log('[ADMIN] User found but not admin:', user.email, 'role:', user.role);
+      } else {
+        console.log('[ADMIN] User not found with ID:', cleanUserId);
+      }
+    }
+    
+    console.error('[ADMIN] Access denied. No valid admin credentials provided');
+    console.error('[ADMIN] Headers received:', {
+      'x-admin': adminToken ? 'present' : 'missing',
+      'authorization': authHeader ? 'present' : 'missing',
+      'x-user-id': req.headers['x-user-id'] ? 'present' : 'missing',
+      'user-id': req.headers['user-id'] ? 'present' : 'missing'
+    });
+    
+    return errorResponse(res, 403, 'Admin access required. Invalid or missing credentials. Please provide valid admin token or login as admin user.');
+    
   } catch (error) {
+    console.error('[ADMIN] Authentication error:', error);
     return errorResponse(res, 500, 'Admin authentication error', error);
   }
 };
@@ -428,6 +494,25 @@ app.get('/api/auth/test', authenticateUser, async (req, res) => {
     authInfo: {
       method: 'authenticated endpoint',
       timestamp: new Date().toISOString()
+    }
+  });
+});
+
+// Admin test endpoint
+app.get('/api/admin/test', requireAdmin, (req, res) => {
+  return successResponse(res, {
+    message: 'Admin access is working correctly!',
+    adminInfo: {
+      timestamp: new Date().toISOString(),
+      method: req.headers['x-admin'] ? 'x-admin header' : 
+              req.headers['authorization'] ? 'authorization header' : 
+              req.adminUser ? 'admin role' : 'unknown',
+      isAdmin: req.isAdmin,
+      adminUser: req.adminUser ? {
+        id: req.adminUser._id,
+        email: req.adminUser.email,
+        name: req.adminUser.name
+      } : null
     }
   });
 });
@@ -1023,24 +1108,48 @@ app.get('/api/pending-recipient', authenticateUser, async (req, res) => {
   }
 });
 
-// Admin: list pending recipients
+// FIXED: Admin: list pending recipients with detailed logging
 app.get('/api/admin/pending-recipient', requireAdmin, async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
-    const query = { status: status || 'pending' };
+    console.log('[ADMIN PENDING RECIPIENT] Request received at:', new Date().toISOString());
+    console.log('[ADMIN PENDING RECIPIENT] Query params:', req.query);
+    console.log('[ADMIN PENDING RECIPIENT] Headers:', {
+      'x-admin': req.headers['x-admin'] ? 'present' : 'missing',
+      'authorization': req.headers['authorization'] ? 'present' : 'missing',
+      'user-id': req.headers['user-id'] ? 'present' : 'missing',
+      'x-user-id': req.headers['x-user-id'] ? 'present' : 'missing'
+    });
+    
+    const { status, page = 1, limit = 20, email } = req.query;
+    const query = {};
+    
+    if (status) {
+      query.status = status;
+    } else {
+      query.status = 'pending';
+    }
+    
+    if (email) {
+      query.email = String(email).toLowerCase().trim();
+    }
+    
+    console.log('[ADMIN PENDING RECIPIENT] MongoDB query:', query);
     
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
     
-    const [pendingRecipients, total] = await Promise.all([
-      PendingRecipient.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      PendingRecipient.countDocuments(query)
-    ]);
+    // Count total first
+    const total = await PendingRecipient.countDocuments(query);
+    console.log(`[ADMIN PENDING RECIPIENT] Total documents found: ${total}`);
+    
+    const pendingRecipients = await PendingRecipient.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+    
+    console.log(`[ADMIN PENDING RECIPIENT] Returning ${pendingRecipients.length} pending recipients`);
     
     return successResponse(res, { 
       pendingRecipients, 
@@ -1049,9 +1158,15 @@ app.get('/api/admin/pending-recipient', requireAdmin, async (req, res) => {
         limit: limitNum,
         total,
         pages: Math.ceil(total / limitNum)
+      },
+      queryInfo: {
+        status: query.status,
+        emailFilter: query.email || 'none',
+        timestamp: new Date().toISOString()
       }
     });
   } catch (err) {
+    console.error('[ADMIN PENDING RECIPIENT] Failed to fetch pending recipients:', err);
     return errorResponse(res, 500, 'Failed to fetch pending recipients', err);
   }
 });
@@ -1059,6 +1174,8 @@ app.get('/api/admin/pending-recipient', requireAdmin, async (req, res) => {
 // Admin: recipient history list
 app.get('/api/admin/pending-recipient/history', requireAdmin, async (req, res) => {
   try {
+    console.log('[ADMIN RECIPIENT HISTORY] Request received');
+    
     const { limit = 100, page = 1 } = req.query;
     const limitNum = Math.max(1, Math.min(500, parseInt(limit)));
     const pageNum = Math.max(1, parseInt(page));
@@ -1073,6 +1190,8 @@ app.get('/api/admin/pending-recipient/history', requireAdmin, async (req, res) =
       RecipientHistory.countDocuments({})
     ]);
     
+    console.log(`[ADMIN RECIPIENT HISTORY] Returning ${history.length} history records`);
+    
     return successResponse(res, { 
       history, 
       pagination: {
@@ -1083,6 +1202,7 @@ app.get('/api/admin/pending-recipient/history', requireAdmin, async (req, res) =
       }
     });
   } catch (err) {
+    console.error('[ADMIN RECIPIENT HISTORY] Failed to fetch recipient history:', err);
     return errorResponse(res, 500, 'Failed to fetch recipient history', err);
   }
 });
@@ -1092,16 +1212,26 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      console.log('[ADMIN APPROVE RECIPIENT] Starting approval for ID:', req.params.id);
+      
       const { id } = req.params;
       const { notes } = req.body;
       const adminId = req.headers['x-admin'] || 'admin';
       
       const pr = await PendingRecipient.findById(id).session(session);
       if (!pr) {
+        console.log('[ADMIN APPROVE RECIPIENT] Pending recipient not found with ID:', id);
         throw new Error('Pending recipient not found');
       }
       
+      console.log('[ADMIN APPROVE RECIPIENT] Found pending recipient:', {
+        id: pr._id,
+        email: pr.email,
+        status: pr.status
+      });
+      
       if (pr.status !== 'pending') {
+        console.log('[ADMIN APPROVE RECIPIENT] Status is not pending:', pr.status);
         const history = new RecipientHistory({
           email: pr.email,
           name: pr.name || '',
@@ -1126,6 +1256,7 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
       // Create user if not exists
       let user = await User.findOne({ email: pr.email }).session(session);
       if (!user) {
+        console.log('[ADMIN APPROVE RECIPIENT] Creating new user for email:', pr.email);
         const randomPassword = crypto.randomBytes(12).toString('hex');
         const hashed = await bcrypt.hash(randomPassword, 10);
         user = new User({ 
@@ -1136,6 +1267,9 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
         });
         
         await user.save({ session });
+        console.log('[ADMIN APPROVE RECIPIENT] New user created:', user._id);
+      } else {
+        console.log('[ADMIN APPROVE RECIPIENT] User already exists:', user._id);
       }
 
       const history = new RecipientHistory({
@@ -1155,6 +1289,8 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
       const safeUser = user.toObject();
       delete safeUser.password;
       
+      console.log('[ADMIN APPROVE RECIPIENT] Approval completed successfully');
+      
       return successResponse(res, { 
         success: true, 
         removed: true, 
@@ -1163,6 +1299,7 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
       });
     });
   } catch (err) {
+    console.error('[ADMIN APPROVE RECIPIENT] Failed to approve pending recipient:', err);
     return errorResponse(res, 500, 'Failed to approve pending recipient', err);
   } finally {
     await session.endSession();
@@ -1172,14 +1309,23 @@ app.put('/api/admin/pending-recipient/:id/approve', requireAdmin, async (req, re
 // Admin: reject pending recipient
 app.put('/api/admin/pending-recipient/:id/reject', requireAdmin, async (req, res) => {
   try {
+    console.log('[ADMIN REJECT RECIPIENT] Starting rejection for ID:', req.params.id);
+    
     const { id } = req.params;
     const { notes } = req.body;
     const adminId = req.headers['x-admin'] || 'admin';
     
     const pr = await PendingRecipient.findById(id);
     if (!pr) {
+      console.log('[ADMIN REJECT RECIPIENT] Pending recipient not found with ID:', id);
       return errorResponse(res, 404, 'Pending recipient not found');
     }
+    
+    console.log('[ADMIN REJECT RECIPIENT] Found pending recipient:', {
+      id: pr._id,
+      email: pr.email,
+      status: pr.status
+    });
     
     const history = new RecipientHistory({
       email: pr.email,
@@ -1194,12 +1340,15 @@ app.put('/api/admin/pending-recipient/:id/reject', requireAdmin, async (req, res
     await history.save();
     await PendingRecipient.deleteOne({ _id: pr._id });
     
+    console.log('[ADMIN REJECT RECIPIENT] Rejection completed successfully');
+    
     return successResponse(res, { 
       success: true, 
       removed: true, 
       history 
     });
   } catch (err) {
+    console.error('[ADMIN REJECT RECIPIENT] Failed to reject pending recipient:', err);
     return errorResponse(res, 500, 'Failed to reject pending recipient', err);
   }
 });
@@ -1207,6 +1356,8 @@ app.put('/api/admin/pending-recipient/:id/reject', requireAdmin, async (req, res
 // Admin: list all pending transactions
 app.get('/api/admin/pending', requireAdmin, async (req, res) => {
   try {
+    console.log('[ADMIN PENDING TX] Request received');
+    
     const { days = 30, status, page = 1, limit = 20 } = req.query;
     const query = {};
     
@@ -1232,6 +1383,8 @@ app.get('/api/admin/pending', requireAdmin, async (req, res) => {
       PendingTransaction.countDocuments(query)
     ]);
     
+    console.log(`[ADMIN PENDING TX] Returning ${pendings.length} pending transactions`);
+    
     return successResponse(res, { 
       pendings, 
       pagination: {
@@ -1243,6 +1396,7 @@ app.get('/api/admin/pending', requireAdmin, async (req, res) => {
       cutoffDate: cutoff
     });
   } catch (err) {
+    console.error('[ADMIN PENDING TX] Failed to fetch pending transactions:', err);
     return errorResponse(res, 500, 'Failed to fetch pending transactions', err);
   }
 });
@@ -1250,8 +1404,12 @@ app.get('/api/admin/pending', requireAdmin, async (req, res) => {
 // Admin: cleanup old pending transactions and non-pending records
 app.delete('/api/admin/pending/cleanup', requireAdmin, async (req, res) => {
   try {
+    console.log('[ADMIN CLEANUP] Request received');
+    
     const olderThanDays = Number(req.query.olderThanDays || 30);
     const cutoff = new Date(Date.now() - Math.max(0, olderThanDays) * 24 * 60 * 60 * 1000);
+    
+    console.log('[ADMIN CLEANUP] Cleaning up with cutoff date:', cutoff);
     
     const nonPendingResult = await PendingTransaction.deleteMany({ 
       status: { $ne: 'pending' } 
@@ -1262,6 +1420,11 @@ app.delete('/api/admin/pending/cleanup', requireAdmin, async (req, res) => {
       createdAt: { $lt: cutoff } 
     });
     
+    console.log('[ADMIN CLEANUP] Cleanup results:', {
+      removedNonPending: nonPendingResult.deletedCount || 0,
+      removedOldPending: oldPendingResult.deletedCount || 0
+    });
+    
     return successResponse(res, {
       removedNonPending: nonPendingResult.deletedCount || 0,
       removedOldPending: oldPendingResult.deletedCount || 0,
@@ -1269,6 +1432,7 @@ app.delete('/api/admin/pending/cleanup', requireAdmin, async (req, res) => {
       message: 'Cleanup completed successfully'
     });
   } catch (err) {
+    console.error('[ADMIN CLEANUP] Failed to cleanup pending transactions:', err);
     return errorResponse(res, 500, 'Failed to cleanup pending transactions', err);
   }
 });
@@ -1987,6 +2151,7 @@ const start = async () => {
     console.log('✅ Connected to MongoDB');
     console.log(`📁 Database: ${mongoose.connection.db.databaseName}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔐 Admin token required: ${process.env.ADMIN_TOKEN ? 'Yes' : 'No (using default)'}`);
     
     app.listen(PORT, () => {
       console.log(`🚀 Server listening on port ${PORT}`);
@@ -1994,6 +2159,10 @@ const start = async () => {
       console.log(`🌐 CORS origins: ${allowedOrigins.join(', ')}`);
       console.log(`✅ CORS is ENABLED for: https://fipay.onrender.com`);
       console.log(`🔐 Authentication accepts: x-user-id header, user-id header, Authorization Bearer token, or userId query parameter`);
+      console.log(`👑 Admin access methods:`);
+      console.log(`   1. Set 'x-admin' header to: ${process.env.ADMIN_TOKEN || 'admin-secret-key-change-this'}`);
+      console.log(`   2. Use Authorization: Bearer ${process.env.ADMIN_TOKEN || 'admin-secret-key-change-this'}`);
+      console.log(`   3. Login as user with role: 'admin' in database`);
       console.log(`💰 Deposits now included in transactions by default`);
       console.log(`🔓 Suspended users can now login and view their data`);
       console.log(`🚫 Suspended users are restricted from making transactions`);
