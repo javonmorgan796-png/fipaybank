@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Wallet, Send, ScanLine, Bitcoin } from "lucide-react";
+import { ArrowLeft, Wallet, Send, ScanLine } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,12 @@ const SendMoneyPage = () => {
   
   const [recipientType, setRecipientType] = useState<'email' | 'crypto' | 'bank'>('crypto');
   const [recipientInput, setRecipientInput] = useState(""); // email or wallet address
-  const [bankDetails, setBankDetails] = useState<{ accountNumber?: string; accountName?: string; bankName?: string }>({});
+  const [bankDetails, setBankDetails] = useState<{ 
+    accountNumber?: string; 
+    accountName?: string; 
+    bankName?: string;
+    username?: string;
+  }>({});
 
   // Payment method selection: 'balance' (wallet balance) or 'card'
   const [paymentMethod, setPaymentMethod] = useState<'balance' | 'card'>('balance');
@@ -39,7 +44,8 @@ const SendMoneyPage = () => {
   const setPaymentMethodLockedChoice = (method: 'balance' | 'card') => {
     setPaymentMethod(method);
     setPaymentMethodLocked(true);
-  }
+  };
+  
   const [amount, setAmount] = useState("");
   const [displayAmount, setDisplayAmount] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -57,7 +63,13 @@ const SendMoneyPage = () => {
 
   // Compute disabled state based on recipient, amount and payment method
   const _amountNum = parseFloat(amount || '0');
-  const isDisabled = isSending || (recipientType !== 'bank' && !recipientInput) || (recipientType === 'bank' && !bankDetails.accountNumber && !bankDetails.accountName) || isNaN(_amountNum) || _amountNum <= 0 || (recipientType === 'crypto' && !recipientInput) || (paymentMethod === 'card' && !selectedCardId);
+  const isDisabled = isSending || 
+    (recipientType !== 'bank' && !recipientInput) || 
+    (recipientType === 'bank' && !bankDetails.accountNumber && !bankDetails.accountName && !bankDetails.username) || 
+    isNaN(_amountNum) || 
+    _amountNum <= 0 || 
+    (recipientType === 'crypto' && !recipientInput) || 
+    (paymentMethod === 'card' && !selectedCardId);
 
   const formatAmountWithCommas = (value: string) => {
     const numericValue = value.replace(/[^0-9.]/g, '');
@@ -125,20 +137,93 @@ const SendMoneyPage = () => {
     if (recipientType === 'email') {
       try {
         const base = import.meta.env.VITE_API_URL || '';
+        
+        // Add authentication headers - removed isAdmin since it doesn't exist on User type
+        const headers = {
+          'Content-Type': 'application/json',
+          'x-user-id': user.id || '',
+        };
+        
         await fetch(`${base}/api/pending-recipient`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: recipientInput.trim().toLowerCase(), name: '', createdBy: user.id })
+          method: 'POST', 
+          headers,
+          body: JSON.stringify({ 
+            email: recipientInput.trim().toLowerCase(), 
+            name: '', 
+            createdBy: user.id 
+          })
         });
-      } catch (e) { console.error('create pending recipient failed', e); }
+      } catch (e) { 
+        console.error('create pending recipient failed', e); 
+      }
     }
 
-    // Build recipientDetails for API
-    const details = recipientType === 'bank' ? bankDetails : (recipientType === 'crypto' ? { address: recipientInput.trim() } : undefined);
+    // Build recipientDetails for API - use email
+    const details = recipientType === 'bank' ? {
+      ...bankDetails,
+      // Use user's email
+      username: bankDetails.username || user.email || ''
+    } : (recipientType === 'crypto' ? { 
+      address: recipientInput.trim() 
+    } : undefined);
 
     // Debug log payload
-    console.log('[sendConfirmed] payload', { recipientType, recipientInput, details, amountNum, selectedCrypto, paymentMethod, selectedCardId });
+    console.log('[sendConfirmed] payload', { 
+      recipientType, 
+      recipientInput, 
+      details, 
+      amountNum, 
+      selectedCrypto, 
+      paymentMethod, 
+      selectedCardId 
+    });
 
-    const result = await sendMoney(recipientType, recipientInput.trim(), details, amountNum, selectedCrypto, selectedCryptoData?.symbol || '', paymentMethod, selectedCardId || undefined);
+    const selectedCryptoData = CRYPTOCURRENCIES.find(c => c.id === selectedCrypto);
+    
+    // Call sendMoney with authentication context
+    const sendMoneyWithAuth = async () => {
+      try {
+        const base = import.meta.env.VITE_API_URL || '';
+        
+        const headers = {
+          'Content-Type': 'application/json',
+          'x-user-id': user.id || '',
+        };
+        
+        const response = await fetch(`${base}/api/transactions/send`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            recipientType,
+            recipient: recipientInput.trim(),
+            details,
+            amount: amountNum,
+            selectedCrypto,
+            cryptoCurrency: selectedCryptoData?.symbol || '',
+            paymentMethod,
+            cardId: selectedCardId || undefined,
+            userId: user.id
+          })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.message || 'Failed to send money');
+        }
+        
+        return { success: true, ...data };
+      } catch (error: any) {
+        console.error('Send money error:', error);
+        return { 
+          success: false, 
+          message: error.message || 'An error occurred while sending money'
+        };
+      }
+    };
+    
+    const result = await sendMoneyWithAuth();
+    
     setIsSending(false);
 
     if (result.success) {
@@ -190,7 +275,7 @@ const SendMoneyPage = () => {
 
         <div className="mt-6 text-center animate-slide-up">
           <p className="text-muted-foreground text-sm">Available Balance</p>
-          <p className="text-2xl font-bold text-foreground">{formatBalance(user.balance)}</p>
+          <p className="text-2xl font-bold text-foreground">{formatBalance(user.balance || 0)}</p>
         </div>
 
         <div className="mt-8 space-y-4 animate-slide-up" style={{ animationDelay: '0.1s' }}>
@@ -281,6 +366,11 @@ const SendMoneyPage = () => {
                   placeholder="Bank name"
                   value={bankDetails.bankName || ''}
                   onChange={(e) => setBankDetails({ ...bankDetails, bankName: e.target.value })}
+                />
+                <Input
+                  placeholder="Username (optional)"
+                  value={bankDetails.username || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, username: e.target.value })}
                 />
               </div>
             )}
