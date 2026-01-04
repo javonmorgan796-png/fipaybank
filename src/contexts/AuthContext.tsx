@@ -43,7 +43,8 @@ interface AuthContextType {
   updateBalance: (newBalance: number) => void;
   updateProfile: (updates: Partial<Pick<User, "name" | "phone" | "avatar">>) => void;
 
-  updateUser: (updates: Partial<User>) => void; // ✅ IMPORTANT
+  updateUser: (updates: Partial<User>) => void;
+  refreshUser: () => Promise<void>; // NEW: Safe refresh method
 }
 
 /* =======================
@@ -54,7 +55,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const CURRENT_USER_KEY = "current_user";
 
 const API_BASE =
-  (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
+  (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com/";
 
 /* =======================
    PROVIDER
@@ -70,10 +71,66 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const savedUser = localStorage.getItem(CURRENT_USER_KEY);
     if (savedUser) {
-      setUser(JSON.parse(savedUser));
+      try {
+        const parsed = JSON.parse(savedUser);
+        // Validate that required fields exist
+        if (parsed.id && parsed.email && parsed.name !== undefined) {
+          setUser(parsed);
+        } else {
+          localStorage.removeItem(CURRENT_USER_KEY);
+        }
+      } catch {
+        localStorage.removeItem(CURRENT_USER_KEY);
+      }
     }
     setIsLoading(false);
   }, []);
+
+  /* =======================
+     🔄 SAFE USER REFRESHER
+  ======================= */
+  const refreshUser = async () => {
+    if (!user?.id) return;
+    
+    try {
+      const res = await fetch(`${API_BASE}/api/users/${user.id}`, {
+        credentials: 'include',
+      });
+      
+      if (!res.ok) {
+        console.warn("User refresh failed:", res.status);
+        return;
+      }
+
+      const data = await res.json();
+      const fresh = data.user;
+      
+      if (!fresh) {
+        console.warn("No user data in refresh response");
+        return;
+      }
+
+      // SAFE UPDATE: Only update specific fields we expect from the API
+      setUser((prev) => {
+        if (!prev) return prev;
+        
+        const updated = {
+          ...prev, // Keep all existing data
+          balance: fresh.balance ?? prev.balance,
+          suspended: fresh.suspended ?? prev.suspended,
+          // Only update name/email if they exist (they should)
+          ...(fresh.name && { name: fresh.name }),
+          ...(fresh.email && { email: fresh.email }),
+        };
+        
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
+        return updated;
+      });
+      
+    } catch (err) {
+      console.error("refreshUser error:", err);
+    }
+  };
 
   /* =======================
      SIGN IN
@@ -163,6 +220,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         name: data.user.name,
         balance: data.user.balance ?? 0,
         suspended: data.user.suspended ?? false,
+        phone: data.user.phone ?? "",
+        avatar: data.user.avatar ?? "",
+        countryCode: data.user.countryCode ?? "",
+        countryName: data.user.countryName ?? "",
+        countryFlag: data.user.countryFlag ?? "",
+        dialCode: data.user.dialCode ?? "",
       };
 
       setUser(u);
@@ -187,7 +250,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
      UPDATE BALANCE
   ======================= */
   const updateBalance = (newBalance: number) => {
-    updateUser({ balance: newBalance });
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, balance: newBalance };
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
+      return updated;
+    });
   };
 
   /* =======================
@@ -196,16 +264,27 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const updateProfile = (
     updates: Partial<Pick<User, "name" | "phone" | "avatar">>
   ) => {
-    updateUser(updates);
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...updates };
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
+      return updated;
+    });
   };
 
   /* =======================
-     🔥 UNIVERSAL USER UPDATER
+     🔥 UNIVERSAL USER UPDATER (IMPROVED)
   ======================= */
   const updateUser = (updates: Partial<User>) => {
     setUser((prev) => {
       if (!prev) return prev;
-      const updated = { ...prev, ...updates };
+      
+      // Filter out undefined values to prevent overwriting existing data
+      const filteredUpdates = Object.fromEntries(
+        Object.entries(updates).filter(([_, value]) => value !== undefined)
+      );
+      
+      const updated = { ...prev, ...filteredUpdates };
       localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
       return updated;
     });
@@ -224,7 +303,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         signOut,
         updateBalance,
         updateProfile,
-        updateUser, // ✅ CRITICAL
+        updateUser,
+        refreshUser, // NEW: Add safe refresh method
       }}
     >
       {children}
