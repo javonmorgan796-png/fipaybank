@@ -14,14 +14,16 @@ const Home = () => {
   const { user, isLoading, refreshUser } = useAuth();
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user || !user.id) return;
 
-    // Initial refresh
+    // ✅ Immediately fetch fresh balance when page loads
     refreshUser();
-    
-    // Set up interval for safe refreshes (every 10 seconds)
-    const timer = setInterval(refreshUser, 10000);
-    
+
+    // ✅ Safe interval refresh (every 10 seconds)
+    const timer = setInterval(() => {
+      refreshUser();
+    }, 10000);
+
     return () => clearInterval(timer);
   }, [user?.id, refreshUser]);
 
