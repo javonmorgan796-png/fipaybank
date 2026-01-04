@@ -1,257 +1,339 @@
-import { useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft, Wallet, Send, ScanLine } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
+import { useWallet } from "@/contexts/WalletContext";
 import { useToast } from "@/hooks/use-toast";
+import { Navigate } from "react-router-dom";
 
 const CRYPTOCURRENCIES = [
-  { id: "btc", name: "Bitcoin", symbol: "BTC" },
-  { id: "eth", name: "Ethereum", symbol: "ETH" },
-  { id: "usdt", name: "Tether", symbol: "USDT" },
+  { id: "btc", name: "Bitcoin", symbol: "BTC", icon: "₿", color: "text-orange-500" },
+  { id: "eth", name: "Ethereum", symbol: "ETH", icon: "Ξ", color: "text-blue-500" },
+  { id: "usdt", name: "Tether", symbol: "USDT", icon: "$", color: "text-green-500" },
+  { id: "bnb", name: "BNB", symbol: "BNB", icon: "B", color: "text-yellow-500" },
+  { id: "xrp", name: "Ripple", symbol: "XRP", icon: "X", color: "text-gray-500" },
 ];
 
 const SendMoneyPage = () => {
   const { user, isLoading } = useAuth();
+  const { sendMoney, getRecentContacts, cards } = useWallet();
   const { toast } = useToast();
   const navigate = useNavigate();
+  
+  const [recipientType, setRecipientType] = useState<'email' | 'crypto' | 'bank'>('crypto');
+  const [recipientInput, setRecipientInput] = useState(""); // email or wallet address
+  const [bankDetails, setBankDetails] = useState<{ 
+    accountNumber?: string; 
+    accountName?: string; 
+    bankName?: string;
+    username?: string;
+  }>({});
 
-  const [recipientType, setRecipientType] = useState<"email" | "crypto" | "bank">("email");
-  const [recipientInput, setRecipientInput] = useState("");
+  // Payment method selection: 'balance' (wallet balance) or 'card'
+  const [paymentMethod, setPaymentMethod] = useState<'balance' | 'card'>('balance');
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  // Once set, the payment method is locked; show only the selected method (user can change via 'Change' link)
+  const [paymentMethodLocked, setPaymentMethodLocked] = useState(false);
 
-  const [bankDetails, setBankDetails] = useState({
-    accountNumber: "",
-    accountName: "",
-    bankName: "",
-  });
-
-  // ✅ Amount handling (RAW + DISPLAY)
-  const [rawAmount, setRawAmount] = useState("");
+  const setPaymentMethodLockedChoice = (method: 'balance' | 'card') => {
+    setPaymentMethod(method);
+    setPaymentMethodLocked(true);
+  };
+  
+  const [amount, setAmount] = useState("");
   const [displayAmount, setDisplayAmount] = useState("");
-
-  const [selectedCrypto, setSelectedCrypto] = useState("btc");
   const [isSending, setIsSending] = useState(false);
+  const [selectedCrypto, setSelectedCrypto] = useState<string>("btc");
+  const [showScanner, setShowScanner] = useState(false);
+
+  // Confirmation & pending UI state
   const [showConfirm, setShowConfirm] = useState(false);
+  const [showPendingDialog, setShowPendingDialog] = useState(false);
+  const [lastPending, setLastPending] = useState<any>(null);
 
-  if (isLoading) return null;
-  if (!user) return <Navigate to="/signin" replace />;
+  useEffect(() => {
+    if (!selectedCardId && cards && cards.length > 0) setSelectedCardId(cards[0].id);
+  }, [cards]);
 
-  /* ================= HELPERS ================= */
+  // Compute disabled state based on recipient, amount and payment method
+  const _amountNum = parseFloat(amount || '0');
+  const isDisabled = isSending || 
+    (recipientType !== 'bank' && !recipientInput) || 
+    (recipientType === 'bank' && !bankDetails.accountNumber && !bankDetails.accountName && !bankDetails.username) || 
+    isNaN(_amountNum) || 
+    _amountNum <= 0 || 
+    (recipientType === 'crypto' && !recipientInput) || 
+    (paymentMethod === 'card' && !selectedCardId);
 
-  const formatWithCommas = (value: string) => {
-    if (!value) return "";
-    const parts = value.split(".");
-    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    return parts.join(".");
+  const formatAmountWithCommas = (value: string) => {
+    const numericValue = value.replace(/[^0-9.]/g, '');
+    const parts = numericValue.split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return parts.join('.');
   };
 
-  const amountNum = Number(rawAmount);
-
-  /* ================= VALIDATION ================= */
-
-  const validate = () => {
-    if (!rawAmount || isNaN(amountNum) || amountNum <= 0) {
-      toast({ title: "Error", description: "Enter a valid amount", variant: "destructive" });
-      return false;
+  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawValue = e.target.value.replace(/,/g, '');
+    if (rawValue === '' || /^\d*\.?\d*$/.test(rawValue)) {
+      setAmount(rawValue);
+      setDisplayAmount(formatAmountWithCommas(rawValue));
     }
-
-    if (recipientType === "email" && !recipientInput.trim()) {
-      toast({ title: "Error", description: "Recipient email is required", variant: "destructive" });
-      return false;
-    }
-
-    if (recipientType === "crypto" && !recipientInput.trim()) {
-      toast({ title: "Error", description: "Wallet address is required", variant: "destructive" });
-      return false;
-    }
-
-    if (
-      recipientType === "bank" &&
-      !bankDetails.accountNumber &&
-      !bankDetails.accountName
-    ) {
-      toast({ title: "Error", description: "Bank details are required", variant: "destructive" });
-      return false;
-    }
-
-    return true;
   };
 
-  /* ================= SEND MONEY ================= */
+  const recentContacts = getRecentContacts();
 
-  const sendMoney = async () => {
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p className="text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/signin" replace />;
+  }
+
+  const handleSend = async () => {
+    // basic validation
+    if (!recipientInput && recipientType !== 'bank') {
+      toast({ title: "Error", description: "Please provide recipient info", variant: "destructive" });
+      return;
+    }
+    if (recipientType === 'bank' && !bankDetails.accountNumber && !bankDetails.accountName && !bankDetails.username) {
+      toast({ title: "Error", description: "Please provide bank account details", variant: "destructive" });
+      return;
+    }
+
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      toast({ title: "Error", description: "Please enter a valid amount", variant: "destructive" });
+      return;
+    }
+
+    // card selection validation
+    if (paymentMethod === 'card' && !selectedCardId) {
+      toast({ title: 'Error', description: 'Please select a card', variant: 'destructive' });
+      return;
+    }
+
+    // Show confirmation modal
+    setShowConfirm(true);
+  };
+
+  const sendConfirmed = async () => {
     setShowConfirm(false);
     setIsSending(true);
 
-    try {
-      const base = import.meta.env.VITE_API_URL || "";
+    const amountNum = parseFloat(amount);
 
-      const payload = {
-        recipientType,
-        recipientEmail:
-          recipientType === "email"
-            ? recipientInput.trim().toLowerCase()
-            : undefined,
-        recipientDetails:
-          recipientType === "crypto"
-            ? { address: recipientInput.trim() }
-            : recipientType === "bank"
-            ? bankDetails
-            : undefined,
-        amount: amountNum,
-        crypto: selectedCrypto,
-        symbol:
-          CRYPTOCURRENCIES.find(c => c.id === selectedCrypto)?.symbol || "",
-      };
-
-      const res = await fetch(`${base}/api/transactions/send`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": user.id,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.message || "Failed to send money");
+    // If email recipient, create pending recipient first
+    if (recipientType === 'email') {
+      try {
+        const base = import.meta.env.VITE_API_URL || '';
+        
+        // Add authentication headers
+        const headers = {
+          'Content-Type': 'application/json',
+          'x-user-id': user.id || '',
+        };
+        
+        await fetch(`${base}/api/pending-recipient`, {
+          method: 'POST', 
+          headers,
+          body: JSON.stringify({ 
+            email: recipientInput.trim().toLowerCase(), 
+            name: '', 
+            createdBy: user.id 
+          })
+        });
+      } catch (e) { 
+        console.error('create pending recipient failed', e); 
       }
+    }
 
-      toast({
-        title: "Success",
-        description: data.message || "Transaction created and pending approval",
-      });
+    // Build payload according to backend API expectations
+    const selectedCryptoData = CRYPTOCURRENCIES.find(c => c.id === selectedCrypto);
+    
+    // Prepare payload based on recipient type
+    let payload: any = {
+      recipientType,
+      amount: amountNum,
+      crypto: selectedCrypto,
+      symbol: selectedCryptoData?.symbol || '',
+      paymentMethod,
+      cardId: selectedCardId || undefined,
+      message: `Transfer of ${amountNum} USD via ${selectedCryptoData?.name || 'crypto'}`
+    };
 
+    // Add recipient-specific fields
+    if (recipientType === 'email') {
+      payload.recipientEmail = recipientInput.trim().toLowerCase();
+      payload.recipientDetails = {};
+    } else if (recipientType === 'crypto') {
+      payload.recipientEmail = ''; // Empty for crypto
+      payload.recipientDetails = { address: recipientInput.trim() };
+    } else if (recipientType === 'bank') {
+      payload.recipientEmail = ''; // Empty for bank
+      payload.recipientDetails = {
+        ...bankDetails,
+        senderEmail: user.email || ''
+      };
+    }
+
+    // Debug log payload
+    console.log('[sendConfirmed] Full payload:', JSON.stringify(payload, null, 2));
+
+    // Call sendMoney API
+    const sendMoneyWithAuth = async () => {
+      try {
+        const base = import.meta.env.VITE_API_URL || '';
+        
+        const headers = {
+          'Content-Type': 'application/json',
+          'x-user-id': user.id || '',
+        };
+        
+        console.log('[sendMoneyWithAuth] Sending to:', `${base}/api/transactions/send`);
+        console.log('[sendMoneyWithAuth] Headers:', headers);
+        
+        const response = await fetch(`${base}/api/transactions/send`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload)
+        });
+        
+        console.log('[sendMoneyWithAuth] Response status:', response.status);
+        
+        let data;
+        try {
+          data = await response.json();
+          console.log('[sendMoneyWithAuth] Response data:', data);
+        } catch (parseError) {
+          console.error('[sendMoneyWithAuth] Failed to parse JSON:', parseError);
+          const text = await response.text();
+          console.log('[sendMoneyWithAuth] Raw response:', text);
+          throw new Error(`Invalid JSON response: ${text.substring(0, 100)}`);
+        }
+        
+        if (!response.ok) {
+          throw new Error(data.message || data.error || `HTTP ${response.status}: Failed to send money`);
+        }
+        
+        return { 
+          success: true, 
+          ...data,
+          pendingId: data.pending?._id || data.pendingId 
+        };
+      } catch (error: any) {
+        console.error('[sendMoneyWithAuth] Error:', error);
+        return { 
+          success: false, 
+          message: error.message || 'An error occurred while sending money',
+          details: error.toString()
+        };
+      }
+    };
+    
+    const result = await sendMoneyWithAuth();
+    
+    setIsSending(false);
+
+    if (result.success) {
+      if (result.pendingId || result.pending?._id) {
+        const pendingId = result.pendingId || result.pending?._id;
+        setLastPending(pendingId ? { _id: pendingId } : null);
+        setShowPendingDialog(true);
+        toast({ 
+          title: "Pending", 
+          description: "Transfer created and is pending admin approval." 
+        });
+      } else {
+        toast({ 
+          title: "Success", 
+          description: result.message || "Money sent successfully!" 
+        });
+      }
+      // Navigate home after successful send
       navigate("/");
-    } catch (err: any) {
-      toast({
-        title: "Error",
-        description: err.message,
-        variant: "destructive",
+    } else {
+      toast({ 
+        title: "Error", 
+        description: result.message || "Failed to send money", 
+        variant: "destructive" 
       });
-    } finally {
-      setIsSending(false);
     }
   };
 
-  /* ================= UI ================= */
+  const handleContactClick = (email: string) => {
+    setRecipientInput(email);
+  };
+
+  const handleScanQR = () => {
+    setShowScanner(true);
+  };
+
+  const handleScanComplete = (address: string) => {
+    setRecipientInput(address);
+    setShowScanner(false);
+    toast({ title: "Address Scanned", description: "Wallet address captured successfully" });
+  };
+
+  const formatBalance = (balance: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+    }).format(balance);
+  };
+
+  const selectedCryptoData = CRYPTOCURRENCIES.find(c => c.id === selectedCrypto);
 
   return (
-    <div className="min-h-screen bg-gray-50 px-4">
-      <div className="max-w-md mx-auto pt-8">
+    <div className="min-h-screen bg-background">
+      <div className="max-w-md mx-auto px-4 pb-24">
+        <div className="pt-6 flex items-center gap-4 animate-fade-in">
+          <button onClick={() => navigate(-1)} className="p-2 rounded-full hover:bg-secondary">
+            <ArrowLeft className="w-6 h-6 text-foreground" />
+          </button>
+          <h1 className="text-2xl font-bold text-foreground">Send Money</h1>
+        </div>
 
-        {/* Header */}
-        <button onClick={() => navigate(-1)} className="flex items-center gap-2 mb-4 text-gray-600">
-          <ArrowLeft size={18} /> Back
-        </button>
+        <div className="mt-6 text-center animate-slide-up">
+          <p className="text-muted-foreground text-sm">Available Balance</p>
+          <p className="text-2xl font-bold text-foreground">{formatBalance(user.balance || 0)}</p>
+        </div>
 
-        {/* Card */}
-        <div className="bg-white rounded-2xl shadow-lg p-6 space-y-5">
-
-          <h1 className="text-xl font-semibold text-center">Send Money</h1>
-
-          {/* Recipient Type */}
-          <div>
-            <label className="text-sm font-medium text-gray-600">Recipient Type</label>
-            <Select value={recipientType} onValueChange={(v: any) => setRecipientType(v)}>
-              <SelectTrigger className="mt-1">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="email">Email</SelectItem>
-                <SelectItem value="crypto">Crypto Wallet</SelectItem>
-                <SelectItem value="bank">Bank</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Recipient Input */}
-          {recipientType !== "bank" && (
+        <div className="mt-8 space-y-4 animate-slide-up" style={{ animationDelay: '0.1s' }}>
+          {/* Cryptocurrency Selection (only when recipient method is crypto) */}
+          {recipientType === 'crypto' && (
             <div>
-              <label className="text-sm font-medium text-gray-600">
-                {recipientType === "email" ? "Recipient Email" : "Wallet Address"}
-              </label>
-              <Input
-                className="mt-1"
-                placeholder={recipientType === "email" ? "example@email.com" : "Wallet address"}
-                value={recipientInput}
-                onChange={(e) => setRecipientInput(e.target.value)}
-              />
-            </div>
-          )}
-
-          {/* Bank Details */}
-          {recipientType === "bank" && (
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm font-medium text-gray-600">Account Number</label>
-                <Input
-                  className="mt-1"
-                  value={bankDetails.accountNumber}
-                  onChange={(e) =>
-                    setBankDetails({ ...bankDetails, accountNumber: e.target.value })
-                  }
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-600">Account Name</label>
-                <Input
-                  className="mt-1"
-                  value={bankDetails.accountName}
-                  onChange={(e) =>
-                    setBankDetails({ ...bankDetails, accountName: e.target.value })
-                  }
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-600">Bank Name</label>
-                <Input
-                  className="mt-1"
-                  value={bankDetails.bankName}
-                  onChange={(e) =>
-                    setBankDetails({ ...bankDetails, bankName: e.target.value })
-                  }
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Amount */}
-          <div>
-            <label className="text-sm font-medium text-gray-600">Amount</label>
-            <Input
-              className="mt-1 text-lg"
-              placeholder="0.00"
-              value={displayAmount}
-              onChange={(e) => {
-                const value = e.target.value.replace(/,/g, "");
-                if (!/^\d*\.?\d*$/.test(value)) return;
-                setRawAmount(value);
-                setDisplayAmount(formatWithCommas(value));
-              }}
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              Available balance: ${formatWithCommas(String(user.balance || 0))}
-            </p>
-          </div>
-
-          {/* Crypto Select */}
-          {recipientType === "crypto" && (
-            <div>
-              <label className="text-sm font-medium text-gray-600">Cryptocurrency</label>
+              <label className="text-sm font-medium text-foreground mb-2 block">Select Cryptocurrency</label>
               <Select value={selectedCrypto} onValueChange={setSelectedCrypto}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue />
+                <SelectTrigger className="w-full h-12">
+                  <SelectValue placeholder="Select a cryptocurrency">
+                    {selectedCryptoData && (
+                      <div className="flex items-center gap-2">
+                        <span className={`text-lg font-bold ${selectedCryptoData.color}`}>
+                          {selectedCryptoData.icon}
+                        </span>
+                        <span>{selectedCryptoData.name} ({selectedCryptoData.symbol})</span>
+                      </div>
+                    )}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {CRYPTOCURRENCIES.map(c => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name} ({c.symbol})
+                  {CRYPTOCURRENCIES.map((crypto) => (
+                    <SelectItem key={crypto.id} value={crypto.id}>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-lg font-bold ${crypto.color}`}>{crypto.icon}</span>
+                        <span>{crypto.name} ({crypto.symbol})</span>
+                      </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -259,36 +341,235 @@ const SendMoneyPage = () => {
             </div>
           )}
 
-          {/* Send Button */}
-          <Button
-            className="w-full h-12 rounded-xl"
-            disabled={isSending}
-            onClick={() => validate() && setShowConfirm(true)}
-          >
-            {isSending ? "Sending..." : "Send Money"}
-          </Button>
+          {/* Recipient Input */}
+          <div>
+            <label className="text-sm font-medium text-foreground mb-2 block">Recipient Method</label>
+            <div className="flex gap-2 mb-3">
+              <Button variant={recipientType === 'email' ? 'secondary' : 'ghost'} onClick={() => setRecipientType('email')}>Email</Button>
+              <Button variant={recipientType === 'crypto' ? 'secondary' : 'ghost'} onClick={() => setRecipientType('crypto')}>Crypto Wallet</Button>
+              <Button variant={recipientType === 'bank' ? 'secondary' : 'ghost'} onClick={() => setRecipientType('bank')}>Bank Account</Button>
+            </div>
+
+            {recipientType === 'email' && (
+              <Input
+                placeholder="Recipient email address"
+                value={recipientInput}
+                onChange={(e) => setRecipientInput(e.target.value)}
+                className="pl-3"
+              />
+            )}
+
+            {recipientType === 'crypto' && (
+              <div className="relative flex gap-2">
+                <div className="relative flex-1">
+                  <Wallet className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                  <Input
+                    placeholder="Wallet address"
+                    value={recipientInput}
+                    onChange={(e) => setRecipientInput(e.target.value)}
+                    className="pl-10"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleScanQR}
+                  className="h-10 w-10 shrink-0"
+                >
+                  <ScanLine className="w-5 h-5" />
+                </Button>
+              </div>
+            )}
+
+            {recipientType === 'bank' && (
+              <div className="space-y-2">
+                <Input
+                  placeholder="Account number"
+                  value={bankDetails.accountNumber || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, accountNumber: e.target.value })}
+                />
+                <Input
+                  placeholder="Account name / username"
+                  value={bankDetails.accountName || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, accountName: e.target.value })}
+                />
+                <Input
+                  placeholder="Bank name"
+                  value={bankDetails.bankName || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, bankName: e.target.value })}
+                />
+                <Input
+                  placeholder="Username (optional)"
+                  value={bankDetails.username || ''}
+                  onChange={(e) => setBankDetails({ ...bankDetails, username: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Payment Method */}
+          <div>
+            <label className="text-sm font-medium text-foreground mb-2 block">Payment Method</label>
+            <div className="flex gap-2 mb-3">
+              {!paymentMethodLocked ? (
+                <>
+                  <Button variant={paymentMethod === 'balance' ? 'secondary' : 'ghost'} onClick={() => setPaymentMethodLockedChoice('balance')}>Wallet Balance</Button>
+                  <Button variant={paymentMethod === 'card' ? 'secondary' : 'ghost'} onClick={() => setPaymentMethodLockedChoice('card')}>Card</Button>
+                </>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="px-3 py-2 rounded bg-muted text-sm">{paymentMethod === 'balance' ? 'Wallet Balance' : 'Card'}</div>
+                  <Button variant="link" onClick={() => setPaymentMethodLocked(false)}>Change</Button>
+                </div>
+              )}
+            </div>
+
+            {paymentMethod === 'card' && (
+              <div className="space-y-2">
+                {cards && cards.length > 0 ? (
+                  <div className="space-y-2">
+                    {cards.map(c => (
+                      <div key={c.id} className={`p-2 border rounded ${selectedCardId === c.id ? 'border-accent' : 'border-border'}`} onClick={() => setSelectedCardId(c.id)}>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-medium">{c.type} •••• {c.lastFour}</div>
+                            <div className="text-xs text-muted-foreground">{c.holderName}</div>
+                          </div>
+                          <div className="text-xs">{c.expiryDate}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">No cards found — add one in your profile.</div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Amount Input */}
+          <div>
+            <label className="text-sm font-medium text-foreground mb-2 block">Amount (USD)</label>
+            <Input
+              type="text"
+              placeholder="Enter amount"
+              value={displayAmount}
+              onChange={handleAmountChange}
+              className="text-2xl font-bold text-center py-6"
+            />
+          </div>
         </div>
+
+        {recentContacts.length > 0 && (
+          <div className="mt-8 animate-slide-up" style={{ animationDelay: '0.2s' }}>
+            <h2 className="text-lg font-semibold text-foreground mb-4">Recent Contacts</h2>
+            <div className="flex gap-4 overflow-x-auto pb-2">
+              {recentContacts.map((contact) => (
+                <button
+                  key={contact.id}
+                  onClick={() => handleContactClick(contact.email)}
+                  className="flex flex-col items-center gap-2 flex-shrink-0 group"
+                >
+                  <Avatar className="w-14 h-14 ring-2 ring-transparent group-hover:ring-accent transition-all">
+                    <AvatarFallback className="bg-secondary text-foreground font-medium">
+                      {contact.name.charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-xs font-medium text-foreground">{contact.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <Button
+          onClick={handleSend}
+          disabled={isDisabled}
+          className="w-full mt-8 py-6 text-lg animate-slide-up"
+          style={{ animationDelay: '0.3s' }}
+        >
+          <Send className="w-5 h-5 mr-2" />
+          {isSending ? "Sending..." : `Send ${selectedCryptoData?.symbol || 'Money'}`}
+        </Button>
       </div>
 
-      {/* Confirm Dialog */}
+      {/* Confirm Dialog: show before creating pending */}
       <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Confirm Transfer</DialogTitle>
           </DialogHeader>
-          <p className="text-sm mb-4">
-            You are about to send <strong>${formatWithCommas(rawAmount)}</strong>
-          </p>
-          <div className="flex gap-2">
-            <Button className="w-full" onClick={sendMoney}>
-              Confirm
-            </Button>
-            <Button className="w-full" variant="outline" onClick={() => setShowConfirm(false)}>
+          <div className="py-4">
+            <p className="mb-2">You are about to create a transfer:</p>
+            <ul className="text-sm space-y-1 mb-4">
+              <li><strong>Recipient method:</strong> {recipientType}</li>
+              <li><strong>Recipient:</strong> {recipientType === 'crypto' ? `${recipientInput.substring(0, 20)}...` : (recipientType === 'email' ? recipientInput : (bankDetails.accountNumber || bankDetails.accountName || ''))}</li>
+              <li><strong>Amount:</strong> ${parseFloat(amount || '0').toFixed(2)}</li>
+              <li><strong>Payment method:</strong> {paymentMethod === 'card' ? 'Card' : 'Wallet Balance'}</li>
+              <li><strong>Crypto:</strong> {selectedCryptoData?.name} ({selectedCryptoData?.symbol})</li>
+            </ul>
+            <div className="flex gap-2">
+              <Button onClick={sendConfirmed} className="w-full" disabled={isSending}>
+                {isSending ? "Processing..." : "Create Pending (Admin approval)"}
+              </Button>
+              <Button variant="outline" onClick={() => setShowConfirm(false)} className="w-full">Cancel</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pending created Dialog */}
+      <Dialog open={showPendingDialog} onOpenChange={setShowPendingDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Transfer Pending</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p>Transfer has been created and is pending admin approval.</p>
+            {lastPending && (
+              <p className="text-sm text-muted-foreground mt-2">Pending ID: <span className="font-mono">{lastPending._id}</span></p>
+            )}
+            <div className="flex gap-2 mt-4">
+              <Button onClick={() => { setShowPendingDialog(false); navigate('/'); }} className="w-full">Go Home</Button>
+              <Button variant="outline" onClick={() => setShowPendingDialog(false)} className="w-full">Close</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* QR Scanner Dialog */}
+      <Dialog open={showScanner} onOpenChange={setShowScanner}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Scan QR Code</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-4 py-6">
+            <div className="w-64 h-64 bg-muted rounded-2xl flex items-center justify-center border-2 border-dashed border-border">
+              <div className="text-center">
+                <ScanLine className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+                <p className="text-sm text-muted-foreground">Camera access required</p>
+                <p className="text-xs text-muted-foreground mt-1">Point camera at QR code</p>
+              </div>
+            </div>
+            <div className="w-full space-y-3">
+              <p className="text-sm text-muted-foreground text-center">Or enter address manually:</p>
+              <Input
+                placeholder="Paste wallet address"
+                onChange={(e) => {
+                  if (e.target.value.length > 10) {
+                    handleScanComplete(e.target.value);
+                  }
+                }}
+              />
+            </div>
+            <Button variant="outline" onClick={() => setShowScanner(false)} className="w-full">
               Cancel
             </Button>
           </div>
         </DialogContent>
       </Dialog>
+
+      <BottomNav />
     </div>
   );
 };
