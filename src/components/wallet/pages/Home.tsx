@@ -19,8 +19,8 @@ const Home = () => {
     // Initial refresh
     refreshUser();
     
-    // Set up interval for safe refreshes
-    const timer = setInterval(refreshUser, 10000); // Every 10 seconds
+    // Set up interval for safe refreshes (every 10 seconds)
+    const timer = setInterval(refreshUser, 10000);
     
     return () => clearInterval(timer);
   }, [user?.id, refreshUser]);
@@ -47,6 +47,7 @@ const Home = () => {
 
   return (
     <div className="min-h-screen bg-background relative">
+      {/* 🚫 ACCOUNT SUSPENDED OVERLAY */}
       {user.suspended && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
           <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-red-600 border border-red-700 text-center shadow-2xl animate-fade-in">
@@ -67,6 +68,7 @@ const Home = () => {
         </div>
       )}
 
+      {/* 🏦 WALLET */}
       <div className="max-w-md mx-auto px-4 pb-24">
         <Header />
         <BalanceCard balance={user.balance} />
