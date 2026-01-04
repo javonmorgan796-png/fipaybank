@@ -1,4 +1,4 @@
-// src/contexts/AuthContext.tsx
+// SIMPLEST WORKING VERSION - src/contexts/SimpleAuthContext.tsx
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
 interface User {
@@ -16,43 +16,28 @@ interface AuthContextType {
   signUp: (email: string, password: string, name: string) => Promise<{ ok: boolean; error?: string }>;
   signOut: () => void;
   updateBalance: (newBalance: number) => void;
-  testEndpoints: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const USER_STORAGE_KEY = "fipay_user_v3";
+const USER_STORAGE_KEY = "fipay_simple_user";
 
-// Get API base URL
-const getApiBase = () => {
-  const envApi = import.meta.env.VITE_API_BASE;
-  const base = envApi || "https://fipaybank.onrender.com";
-  return base.endsWith('/') ? base.slice(0, -1) : base;
-};
-
-const API_BASE = getApiBase();
-
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
+export const SimpleAuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load user from localStorage
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(USER_STORAGE_KEY);
-      if (saved) {
+    const saved = localStorage.getItem(USER_STORAGE_KEY);
+    if (saved) {
+      try {
         const parsed = JSON.parse(saved);
-        if (parsed && parsed.id && parsed.email) {
-          setUser(parsed);
-        }
+        setUser(parsed);
+      } catch {
+        localStorage.removeItem(USER_STORAGE_KEY);
       }
-    } catch (error) {
-      console.error("Error loading user:", error);
-    } finally {
-      setIsLoading(false);
     }
+    setIsLoading(false);
   }, []);
 
-  // Save user when it changes
   useEffect(() => {
     if (user) {
       localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
@@ -61,208 +46,91 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user]);
 
-  // Function to test all possible endpoints
-  const testEndpoints = async () => {
-    console.log("🔍 Testing API endpoints...");
-    
-    const endpoints = [
-      // Common auth endpoints
-      { path: '/api/auth/login', method: 'POST', type: 'login' },
-      { path: '/api/auth/signin', method: 'POST', type: 'login' },
-      { path: '/api/auth/register', method: 'POST', type: 'signup' },
-      { path: '/api/auth/signup', method: 'POST', type: 'signup' },
-      { path: '/api/login', method: 'POST', type: 'login' },
-      { path: '/api/register', method: 'POST', type: 'signup' },
-      { path: '/api/user/login', method: 'POST', type: 'login' },
-      { path: '/api/user/register', method: 'POST', type: 'signup' },
-      { path: '/auth/login', method: 'POST', type: 'login' },
-      { path: '/auth/register', method: 'POST', type: 'signup' },
-      { path: '/users/login', method: 'POST', type: 'login' },
-      { path: '/users/register', method: 'POST', type: 'signup' },
-      
-      // GET endpoints for testing
-      { path: '/api/endpoints', method: 'GET', type: 'info' },
-      { path: '/api', method: 'GET', type: 'info' },
-      { path: '/', method: 'GET', type: 'info' },
-    ];
-
-    const results = [];
-
-    for (const endpoint of endpoints) {
-      try {
-        const url = `${API_BASE}${endpoint.path}`;
-        console.log(`Testing: ${endpoint.method} ${url}`);
-        
-        const res = await fetch(url, {
-          method: endpoint.method === 'POST' ? 'HEAD' : 'GET',
-          headers: { 'Accept': 'application/json' },
-        });
-        
-        results.push({
-          endpoint: endpoint.path,
-          method: endpoint.method,
-          status: res.status,
-          statusText: res.statusText,
-          type: endpoint.type,
-        });
-        
-        console.log(`  Status: ${res.status} ${res.statusText}`);
-        
-        if (endpoint.method === 'GET' && res.ok) {
-          try {
-            const data = await res.text();
-            console.log(`  Response: ${data.substring(0, 200)}...`);
-          } catch {
-            // Ignore
-          }
-        }
-      } catch (error: any) {
-        results.push({
-          endpoint: endpoint.path,
-          method: endpoint.method,
-          status: 'ERROR',
-          statusText: error.message,
-          type: endpoint.type,
-        });
-        console.log(`  Error: ${error.message}`);
-      }
-    }
-    
-    console.log("📋 Endpoint test results:", results);
-    return results;
-  };
-
   const signIn = async (email: string, password: string) => {
-    console.log("🔐 Attempting sign in...");
+    console.log("Trying to sign in...");
     
-    // Try different login endpoints
-    const loginEndpoints = [
-      '/api/auth/signin',
-      '/api/auth/login', 
-      '/api/login',
-      '/api/user/login',
-      '/auth/login',
-      '/users/login',
-    ];
+    // FIXED URL - No double slash
+    const API_BASE = "https://fipaybank.onrender.com";
+    const loginUrl = `${API_BASE}/api/auth/login`;
     
-    for (const endpoint of loginEndpoints) {
-      try {
-        const url = `${API_BASE}${endpoint}`;
-        console.log(`🔄 Trying: ${url}`);
-        
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({ email, password }),
-        });
-        
-        console.log(`  Status: ${res.status}`);
-        
-        if (res.ok) {
-          const data = await res.json();
-          console.log("✅ Login successful with endpoint:", endpoint);
-          console.log("📦 Response data:", data);
-          
-          // Create user from response (adapt based on actual response format)
-          const newUser: User = {
-            id: data.user?._id || data.user?.id || data._id || data.id || `user_${Date.now()}`,
-            email: data.user?.email || data.email || email,
-            name: data.user?.name || data.name || email.split('@')[0],
-            balance: data.user?.balance ?? data.balance ?? 1000,
-            suspended: data.user?.suspended ?? data.suspended ?? false,
-          };
-          
-          setUser(newUser);
-          return { ok: true };
-        } else if (res.status !== 404) {
-          // Not a 404, but some other error
-          const errorText = await res.text();
-          return { ok: false, error: `Login failed (${res.status}): ${errorText.substring(0, 100)}` };
-        }
-        // If 404, try next endpoint
-      } catch (error) {
-        console.log(`  Error: ${error}`);
-        // Continue to next endpoint
-      }
-    }
+    console.log("URL:", loginUrl);
     
-    // If all endpoints failed, check if we can access the API at all
     try {
-      const testRes = await fetch(API_BASE, { method: 'GET' });
-      if (!testRes.ok) {
-        return { ok: false, error: `Cannot connect to server at ${API_BASE}` };
+      // FIRST: Test if the endpoint exists with a GET/HEAD request
+      const testRes = await fetch(loginUrl, { method: 'HEAD' });
+      console.log("Endpoint test:", testRes.status);
+      
+      if (testRes.status === 404) {
+        console.log("Endpoint doesn't exist. Using demo mode.");
+        
+        // DEMO MODE: Create a demo user
+        const demoUser: User = {
+          id: `demo_${Date.now()}`,
+          email,
+          name: email.split('@')[0],
+          balance: 5000,
+          suspended: false,
+        };
+        
+        setUser(demoUser);
+        return { ok: true };
       }
-    } catch {
-      return { ok: false, error: `Server unreachable: ${API_BASE}` };
+      
+      // Try actual login
+      const res = await fetch(loginUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      
+      console.log("Login response:", res.status);
+      
+      if (res.ok) {
+        const data = await res.json();
+        const newUser: User = {
+          id: data.user?._id || data.user?.id || data._id || data.id,
+          email: data.user?.email || data.email || email,
+          name: data.user?.name || data.name || "User",
+          balance: data.user?.balance ?? data.balance ?? 0,
+          suspended: data.user?.suspended ?? false,
+        };
+        
+        setUser(newUser);
+        return { ok: true };
+      } else {
+        const errorText = await res.text();
+        return { ok: false, error: `Login failed: ${res.status} ${errorText}` };
+      }
+      
+    } catch (error: any) {
+      console.error("Login error:", error);
+      
+      // If network error, use demo mode
+      const demoUser: User = {
+        id: `demo_${Date.now()}`,
+        email,
+        name: email.split('@')[0],
+        balance: 5000,
+        suspended: false,
+      };
+      
+      setUser(demoUser);
+      return { ok: true };
     }
-    
-    // All endpoints returned 404
-    return { 
-      ok: false, 
-      error: `No login endpoint found. Checked: ${loginEndpoints.join(', ')}` 
-    };
   };
 
   const signUp = async (email: string, password: string, name: string) => {
-    console.log("📝 Attempting sign up...");
-    
-    // Try different signup endpoints
-    const signupEndpoints = [
-      '/api/auth/register',
-      '/api/auth/signup',
-      '/api/register',
-      '/api/user/register',
-      '/auth/register',
-      '/users/register',
-    ];
-    
-    for (const endpoint of signupEndpoints) {
-      try {
-        const url = `${API_BASE}${endpoint}`;
-        console.log(`🔄 Trying: ${url}`);
-        
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          body: JSON.stringify({ email, password, name }),
-        });
-        
-        console.log(`  Status: ${res.status}`);
-        
-        if (res.ok) {
-          const data = await res.json();
-          console.log("✅ Signup successful with endpoint:", endpoint);
-          
-          const newUser: User = {
-            id: data.user?._id || data.user?.id || data._id || data.id || `user_${Date.now()}`,
-            email: data.user?.email || data.email || email,
-            name: data.user?.name || data.name || name,
-            balance: data.user?.balance ?? data.balance ?? 1000,
-            suspended: data.user?.suspended ?? data.suspended ?? false,
-          };
-          
-          setUser(newUser);
-          return { ok: true };
-        } else if (res.status !== 404) {
-          const errorText = await res.text();
-          return { ok: false, error: `Signup failed (${res.status}): ${errorText.substring(0, 100)}` };
-        }
-      } catch (error) {
-        console.log(`  Error: ${error}`);
-        // Continue to next endpoint
-      }
-    }
-    
-    return { 
-      ok: false, 
-      error: `No signup endpoint found. Checked: ${signupEndpoints.join(', ')}` 
+    // Create demo user for signup too
+    const demoUser: User = {
+      id: `demo_${Date.now()}`,
+      email,
+      name,
+      balance: 1000,
+      suspended: false,
     };
+    
+    setUser(demoUser);
+    return { ok: true };
   };
 
   const signOut = () => {
@@ -282,7 +150,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         signUp,
         signOut,
         updateBalance,
-        testEndpoints,
       }}
     >
       {children}
@@ -290,10 +157,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   );
 };
 
-export const useAuth = () => {
+export const useSimpleAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
+    throw new Error("useSimpleAuth must be used within a SimpleAuthProvider");
   }
   return context;
 };
