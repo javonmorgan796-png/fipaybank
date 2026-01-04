@@ -1,8 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from "react";
-
-/* =======================
-   TYPES
-======================= */
+import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
 interface User {
   id: string;
@@ -22,313 +18,81 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  signUp: (
-    email: string,
-    password: string,
-    name: string,
-    phone?: string,
-    countryCode?: string,
-    countryName?: string,
-    countryFlag?: string,
-    dialCode?: string
-  ) => Promise<{ ok: boolean; error?: string }>;
+  signUp: (email: string, password: string, name: string) => Promise<{ ok: boolean; error?: string }>;
   signOut: () => void;
   updateBalance: (newBalance: number) => void;
-  updateProfile: (updates: Partial<Pick<User, "name" | "phone" | "avatar">>) => void;
-  updateUser: (updates: Partial<User>) => void;
-  refreshUserBalance: () => Promise<boolean>;
-  isRefreshing: boolean;
+  refreshBalance: () => Promise<void>;
 }
 
-/* =======================
-   CONSTANTS
-======================= */
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const CURRENT_USER_KEY = "fipay_current_user";
+const USER_STORAGE_KEY = "fipay_user_v2";
 
-// Ensure no trailing slash in API_BASE
-const getApiBase = () => {
-  const base = (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
-  return base.endsWith('/') ? base.slice(0, -1) : base;
-};
+const API_BASE = (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
 
-const API_BASE = getApiBase();
-
-/* =======================
-   PROVIDER
-======================= */
+// Remove trailing slash if present
+const cleanApiBase = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
-  /* =======================
-     LOAD USER FROM STORAGE (SAFE)
-  ======================= */
+  // Load user from localStorage on initial load
   useEffect(() => {
-    console.log("🔍 [Auth] Loading user from storage...");
-    
-    try {
-      const savedUser = localStorage.getItem(CURRENT_USER_KEY);
-      if (savedUser) {
-        const parsed = JSON.parse(savedUser);
-        
-        // Validate required fields
-        if (parsed && parsed.id && parsed.email && parsed.name !== undefined) {
-          console.log("✅ [Auth] Valid user found in storage:", parsed.id.substring(0, 8));
-          setUser(parsed);
-        } else {
-          console.warn("⚠️ [Auth] Invalid user data in storage, clearing");
-          localStorage.removeItem(CURRENT_USER_KEY);
-        }
-      } else {
-        console.log("ℹ️ [Auth] No user found in storage");
-      }
-    } catch (error) {
-      console.error("❌ [Auth] Error loading user from storage:", error);
-      localStorage.removeItem(CURRENT_USER_KEY);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  /* =======================
-     SAFE UPDATE USER FUNCTION
-  ======================= */
-  const updateUser = useCallback((updates: Partial<User>) => {
-    console.log("🔄 [Auth] updateUser called with:", updates);
-    
-    setUser((prev) => {
-      if (!prev) {
-        console.warn("⚠️ [Auth] Cannot update - no previous user");
-        return prev;
-      }
-      
-      // Log previous state
-      console.log("📝 [Auth] Previous user state:", {
-        id: prev.id.substring(0, 8),
-        balance: prev.balance,
-        name: prev.name,
-        email: prev.email
-      });
-      
-      // Filter out undefined values and create safe updates
-      const safeUpdates: Partial<User> = {};
-      
-      // Only update fields that are explicitly provided and not undefined
-      if (updates.balance !== undefined) {
-        safeUpdates.balance = updates.balance;
-      }
-      if (updates.suspended !== undefined) {
-        safeUpdates.suspended = updates.suspended;
-      }
-      if (updates.name !== undefined && updates.name !== "") {
-        safeUpdates.name = updates.name;
-      }
-      if (updates.email !== undefined && updates.email !== "") {
-        safeUpdates.email = updates.email;
-      }
-      if (updates.phone !== undefined) {
-        safeUpdates.phone = updates.phone;
-      }
-      if (updates.avatar !== undefined) {
-        safeUpdates.avatar = updates.avatar;
-      }
-      if (updates.countryCode !== undefined) {
-        safeUpdates.countryCode = updates.countryCode;
-      }
-      if (updates.countryName !== undefined) {
-        safeUpdates.countryName = updates.countryName;
-      }
-      if (updates.countryFlag !== undefined) {
-        safeUpdates.countryFlag = updates.countryFlag;
-      }
-      if (updates.dialCode !== undefined) {
-        safeUpdates.dialCode = updates.dialCode;
-      }
-      
-      // Merge with previous state
-      const updated = { ...prev, ...safeUpdates };
-      
-      console.log("✅ [Auth] New user state:", {
-        id: updated.id.substring(0, 8),
-        balance: updated.balance,
-        name: updated.name,
-        email: updated.email
-      });
-      
-      // Save to localStorage
+    const loadUser = () => {
       try {
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
-        console.log("💾 [Auth] Saved to localStorage");
+        const saved = localStorage.getItem(USER_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          // Basic validation
+          if (parsed && parsed.id && parsed.email && parsed.name) {
+            setUser(parsed);
+            console.log("✅ Loaded user from storage:", parsed.id.substring(0, 8));
+          } else {
+            localStorage.removeItem(USER_STORAGE_KEY);
+          }
+        }
       } catch (error) {
-        console.error("❌ [Auth] Failed to save to localStorage:", error);
+        console.error("Failed to load user:", error);
+        localStorage.removeItem(USER_STORAGE_KEY);
+      } finally {
+        setIsLoading(false);
       }
-      
-      return updated;
-    });
+    };
+
+    loadUser();
   }, []);
 
-  /* =======================
-     SAFE BALANCE REFRESH FUNCTION
-  ======================= */
-  const refreshUserBalance = useCallback(async (): Promise<boolean> => {
-    if (!user?.id) {
-      console.log("⏭️ [Auth] No user ID, skipping refresh");
-      return false;
+  // Save user to localStorage whenever it changes
+  useEffect(() => {
+    if (user) {
+      try {
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+      } catch (error) {
+        console.error("Failed to save user:", error);
+      }
     }
-    
-    // Prevent concurrent refreshes
-    if (isRefreshing) {
-      console.log("⏭️ [Auth] Refresh already in progress");
-      return false;
-    }
-    
-    setIsRefreshing(true);
-    
-    // Cancel any pending request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    
-    try {
-      console.log("🔄 [Auth] Starting balance refresh for user:", user.id.substring(0, 8));
-      
-      // Try multiple endpoints - starting with the most likely
-      const endpoints = [
-        `${API_BASE}/api/users/${user.id}/balance`,
-        `${API_BASE}/api/auth/me`,
-        `${API_BASE}/api/users/${user.id}`
-      ];
-      
-      let response: Response | null = null;
-      let lastError: Error | null = null;
-      
-      for (const endpoint of endpoints) {
-        try {
-          console.log(`📡 [Auth] Trying endpoint: ${endpoint}`);
-          
-          response = await fetch(endpoint, {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            credentials: 'include',
-            signal: abortController.signal,
-          });
-          
-          console.log(`📡 [Auth] Response status: ${response.status}`);
-          
-          if (response.ok) {
-            break; // Success, stop trying other endpoints
-          }
-          
-          if (response.status === 404) {
-            console.log(`❌ [Auth] Endpoint not found: ${endpoint}`);
-            continue; // Try next endpoint
-          }
-          
-        } catch (error) {
-          lastError = error as Error;
-          console.log(`⚠️ [Auth] Failed to fetch ${endpoint}:`, error);
-          continue;
-        }
-      }
-      
-      if (!response || !response.ok) {
-        console.warn("⚠️ [Auth] All balance endpoints failed");
-        return false;
-      }
-      
-      const data = await response.json().catch(() => ({}));
-      console.log("✅ [Auth] Refresh response data:", data);
-      
-      // Extract user data from different response formats
-      const userData = data.user || data;
-      
-      if (!userData) {
-        console.warn("⚠️ [Auth] No user data in response");
-        return false;
-      }
-      
-      // Prepare updates
-      const updates: Partial<User> = {};
-      
-      if (userData.balance !== undefined && userData.balance !== null) {
-        updates.balance = Number(userData.balance);
-      }
-      
-      if (userData.suspended !== undefined && userData.suspended !== null) {
-        updates.suspended = Boolean(userData.suspended);
-      }
-      
-      // Apply updates if we have any
-      if (Object.keys(updates).length > 0) {
-        console.log("📊 [Auth] Applying updates:", updates);
-        updateUser(updates);
-      } else {
-        console.log("ℹ️ [Auth] No balance/suspended updates to apply");
-      }
-      
-      return true;
-      
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        console.log("⏹️ [Auth] Refresh request aborted");
-      } else {
-        console.error("❌ [Auth] Error refreshing balance:", error);
-      }
-      return false;
-    } finally {
-      setIsRefreshing(false);
-      abortControllerRef.current = null;
-    }
-  }, [user?.id, updateUser, isRefreshing]);
+  }, [user]);
 
-  /* =======================
-     SIGN IN
-  ======================= */
   const signIn = async (email: string, password: string) => {
-    console.log("🔐 [Auth] Signing in with email:", email);
-    
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
+      const res = await fetch(`${cleanApiBase}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-        credentials: 'include',
       });
 
-      console.log(`📡 [Auth] Login response status: ${res.status}`);
-      
       if (!res.ok) {
-        const errorText = await res.text();
-        console.error("❌ [Auth] Login failed:", errorText);
-        
-        try {
-          const err = JSON.parse(errorText);
-          return { ok: false, error: err.error || "Sign in failed" };
-        } catch {
-          return { ok: false, error: `Login failed (${res.status})` };
-        }
+        const err = await res.json().catch(() => ({}));
+        return { ok: false, error: err.error || "Sign in failed" };
       }
 
       const data = await res.json();
-      console.log("✅ [Auth] Login successful, user data:", data.user?.id);
 
       if (!data.user) {
-        console.error("❌ [Auth] No user data in response");
         return { ok: false, error: "Invalid response from server" };
       }
 
-      const u: User = {
+      const newUser: User = {
         id: data.user._id || data.user.id,
         email: data.user.email || email,
         name: data.user.name || "User",
@@ -342,174 +106,141 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         dialCode: data.user.dialCode || "",
       };
 
-      console.log("👤 [Auth] Setting user:", u.id.substring(0, 8));
-      setUser(u);
-      
-      try {
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(u));
-        console.log("💾 [Auth] User saved to localStorage");
-      } catch (storageError) {
-        console.error("❌ [Auth] Failed to save user to localStorage:", storageError);
-      }
-
+      setUser(newUser);
       return { ok: true };
     } catch (err) {
-      console.error("❌ [Auth] Sign in error:", err);
+      console.error("Sign in error:", err);
       return { ok: false, error: "Server unreachable" };
     }
   };
 
-  /* =======================
-     SIGN UP
-  ======================= */
-  const signUp = async (
-    email: string,
-    password: string,
-    name: string,
-    phone?: string,
-    countryCode?: string,
-    countryName?: string,
-    countryFlag?: string,
-    dialCode?: string
-  ) => {
-    console.log("📝 [Auth] Signing up:", email);
-    
+  const signUp = async (email: string, password: string, name: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/signup`, {
+      const res = await fetch(`${cleanApiBase}/api/auth/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          password,
-          name,
-          phone,
-          countryCode,
-          countryName,
-          countryFlag,
-          dialCode,
-        }),
+        body: JSON.stringify({ email, password, name }),
       });
 
-      console.log(`📡 [Auth] Signup response status: ${res.status}`);
-      
       if (!res.ok) {
-        const errorText = await res.text();
-        console.error("❌ [Auth] Signup failed:", errorText);
-        
-        try {
-          const err = JSON.parse(errorText);
-          return { ok: false, error: err.error || "Sign up failed" };
-        } catch {
-          return { ok: false, error: `Signup failed (${res.status})` };
-        }
+        const err = await res.json().catch(() => ({}));
+        return { ok: false, error: err.error || "Sign up failed" };
       }
 
       const data = await res.json();
-      console.log("✅ [Auth] Signup successful");
 
-      const u: User = {
+      const newUser: User = {
         id: data.user._id || data.user.id,
         email: data.user.email || email,
         name: data.user.name || name,
         balance: data.user.balance ?? 0,
         suspended: data.user.suspended ?? false,
-        phone: data.user.phone || phone || "",
-        avatar: data.user.avatar || "",
-        countryCode: data.user.countryCode || countryCode || "",
-        countryName: data.user.countryName || countryName || "",
-        countryFlag: data.user.countryFlag || countryFlag || "",
-        dialCode: data.user.dialCode || dialCode || "",
       };
 
-      console.log("👤 [Auth] Setting new user:", u.id.substring(0, 8));
-      setUser(u);
-      
-      try {
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(u));
-        console.log("💾 [Auth] New user saved to localStorage");
-      } catch (storageError) {
-        console.error("❌ [Auth] Failed to save user to localStorage:", storageError);
-      }
-
+      setUser(newUser);
       return { ok: true };
     } catch (err) {
-      console.error("❌ [Auth] Sign up error:", err);
+      console.error("Sign up error:", err);
       return { ok: false, error: "Server unreachable" };
     }
   };
 
-  /* =======================
-     SIGN OUT
-  ======================= */
-  const signOut = useCallback(() => {
-    console.log("👋 [Auth] Signing out user:", user?.id?.substring(0, 8));
-    
-    // Cancel any pending refresh
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    
+  const signOut = () => {
     setUser(null);
-    
-    try {
-      localStorage.removeItem(CURRENT_USER_KEY);
-      console.log("🧹 [Auth] User removed from localStorage");
-    } catch (error) {
-      console.error("❌ [Auth] Failed to remove user from localStorage:", error);
-    }
-  }, [user?.id]);
-
-  /* =======================
-     UPDATE BALANCE
-  ======================= */
-  const updateBalance = useCallback((newBalance: number) => {
-    console.log("💰 [Auth] Updating balance to:", newBalance);
-    updateUser({ balance: newBalance });
-  }, [updateUser]);
-
-  /* =======================
-     UPDATE PROFILE
-  ======================= */
-  const updateProfile = useCallback((
-    updates: Partial<Pick<User, "name" | "phone" | "avatar">>
-  ) => {
-    console.log("👤 [Auth] Updating profile:", updates);
-    updateUser(updates);
-  }, [updateUser]);
-
-  /* =======================
-     PROVIDER VALUE
-  ======================= */
-  const contextValue: AuthContextType = {
-    user,
-    isLoading,
-    isRefreshing,
-    signIn,
-    signUp,
-    signOut,
-    updateBalance,
-    updateProfile,
-    updateUser,
-    refreshUserBalance,
+    localStorage.removeItem(USER_STORAGE_KEY);
   };
 
-  console.log("🔄 [Auth] Context updated:", {
-    hasUser: !!user,
-    userId: user?.id?.substring(0, 8),
-    isLoading,
-    isRefreshing
-  });
+  const updateBalance = (newBalance: number) => {
+    if (user) {
+      setUser({ ...user, balance: newBalance });
+    }
+  };
+
+  // SIMPLE refresh function - ONLY gets balance, doesn't touch user object
+  const refreshBalance = async () => {
+    if (!user?.id) return;
+
+    try {
+      console.log("🔄 Refreshing balance for user:", user.id.substring(0, 8));
+
+      // Try multiple endpoints
+      const endpoints = [
+        `${cleanApiBase}/api/users/${user.id}/balance`,
+        `${cleanApiBase}/api/auth/balance`,
+        `${cleanApiBase}/api/users/${user.id}`,
+      ];
+
+      let balanceData: any = null;
+
+      for (const endpoint of endpoints) {
+        try {
+          const res = await fetch(endpoint, {
+            headers: { "Content-Type": "application/json" },
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            console.log("✅ Balance response from", endpoint, data);
+            
+            // Extract balance from different response formats
+            if (data.balance !== undefined) {
+              balanceData = { balance: data.balance, suspended: data.suspended || false };
+              break;
+            } else if (data.user?.balance !== undefined) {
+              balanceData = { 
+                balance: data.user.balance, 
+                suspended: data.user.suspended || false 
+              };
+              break;
+            }
+          }
+        } catch (err) {
+          console.log("Failed endpoint:", endpoint, err);
+          continue;
+        }
+      }
+
+      if (balanceData && user) {
+        // ONLY update balance and suspended status
+        const updates: Partial<User> = {};
+        
+        if (balanceData.balance !== undefined) {
+          updates.balance = Number(balanceData.balance);
+        }
+        
+        if (balanceData.suspended !== undefined) {
+          updates.suspended = Boolean(balanceData.suspended);
+        }
+        
+        // Only update if we have changes
+        if (Object.keys(updates).length > 0) {
+          setUser(prev => prev ? { ...prev, ...updates } : null);
+          console.log("✅ Balance updated to:", updates.balance);
+        }
+      } else {
+        console.log("⚠️ No balance data received");
+      }
+    } catch (error) {
+      console.error("❌ Error refreshing balance:", error);
+    }
+  };
 
   return (
-    <AuthContext.Provider value={contextValue}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isLoading,
+        signIn,
+        signUp,
+        signOut,
+        updateBalance,
+        refreshBalance,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
 };
-
-/* =======================
-   HOOK
-======================= */
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
