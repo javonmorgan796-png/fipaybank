@@ -1,5 +1,9 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
+/* =======================
+   TYPES
+======================= */
+
 interface User {
   id: string;
   email: string;
@@ -17,65 +21,66 @@ interface User {
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  signIn: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  signUp: (email: string, password: string, name: string) => Promise<{ ok: boolean; error?: string }>;
+
+  signIn: (
+    email: string,
+    password: string
+  ) => Promise<{ ok: boolean; error?: string }>;
+
+  signUp: (
+    email: string,
+    password: string,
+    name: string,
+    phone?: string,
+    countryCode?: string,
+    countryName?: string,
+    countryFlag?: string,
+    dialCode?: string
+  ) => Promise<{ ok: boolean; error?: string }>;
+
   signOut: () => void;
+
   updateBalance: (newBalance: number) => void;
-  refreshBalance: () => Promise<void>;
+  updateProfile: (updates: Partial<Pick<User, "name" | "phone" | "avatar">>) => void;
+
+  updateUser: (updates: Partial<User>) => void; // ✅ IMPORTANT
 }
 
+/* =======================
+   CONSTANTS
+======================= */
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const USER_STORAGE_KEY = "fipay_user_v2";
+const CURRENT_USER_KEY = "current_user";
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
+const API_BASE =
+  (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com/";
 
-// Remove trailing slash if present
-const cleanApiBase = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+/* =======================
+   PROVIDER
+======================= */
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load user from localStorage on initial load
+  /* =======================
+     LOAD USER FROM STORAGE
+  ======================= */
   useEffect(() => {
-    const loadUser = () => {
-      try {
-        const saved = localStorage.getItem(USER_STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          // Basic validation
-          if (parsed && parsed.id && parsed.email && parsed.name) {
-            setUser(parsed);
-            console.log("✅ Loaded user from storage:", parsed.id.substring(0, 8));
-          } else {
-            localStorage.removeItem(USER_STORAGE_KEY);
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load user:", error);
-        localStorage.removeItem(USER_STORAGE_KEY);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadUser();
+    const savedUser = localStorage.getItem(CURRENT_USER_KEY);
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+    setIsLoading(false);
   }, []);
 
-  // Save user to localStorage whenever it changes
-  useEffect(() => {
-    if (user) {
-      try {
-        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
-      } catch (error) {
-        console.error("Failed to save user:", error);
-      }
-    }
-  }, [user]);
-
+  /* =======================
+     SIGN IN
+  ======================= */
   const signIn = async (email: string, password: string) => {
     try {
-      const res = await fetch(`${cleanApiBase}/api/auth/login`, {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -89,37 +94,60 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const data = await res.json();
 
       if (!data.user) {
-        return { ok: false, error: "Invalid response from server" };
+        return { ok: false, error: "Invalid response" };
       }
 
-      const newUser: User = {
+      const u: User = {
         id: data.user._id || data.user.id,
-        email: data.user.email || email,
-        name: data.user.name || "User",
+        email: data.user.email,
+        name: data.user.name,
         balance: data.user.balance ?? 0,
         suspended: data.user.suspended ?? false,
-        phone: data.user.phone || "",
-        avatar: data.user.avatar || "",
-        countryCode: data.user.countryCode || "",
-        countryName: data.user.countryName || "",
-        countryFlag: data.user.countryFlag || "",
-        dialCode: data.user.dialCode || "",
+        phone: data.user.phone ?? "",
+        avatar: data.user.avatar ?? "",
+        countryCode: data.user.countryCode ?? "",
+        countryName: data.user.countryName ?? "",
+        countryFlag: data.user.countryFlag ?? "",
+        dialCode: data.user.dialCode ?? "",
       };
 
-      setUser(newUser);
+      setUser(u);
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(u));
+
       return { ok: true };
     } catch (err) {
-      console.error("Sign in error:", err);
+      console.error("signIn error", err);
       return { ok: false, error: "Server unreachable" };
     }
   };
 
-  const signUp = async (email: string, password: string, name: string) => {
+  /* =======================
+     SIGN UP
+  ======================= */
+  const signUp = async (
+    email: string,
+    password: string,
+    name: string,
+    phone?: string,
+    countryCode?: string,
+    countryName?: string,
+    countryFlag?: string,
+    dialCode?: string
+  ) => {
     try {
-      const res = await fetch(`${cleanApiBase}/api/auth/signup`, {
+      const res = await fetch(`${API_BASE}/api/auth/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, name }),
+        body: JSON.stringify({
+          email,
+          password,
+          name,
+          phone,
+          countryCode,
+          countryName,
+          countryFlag,
+          dialCode,
+        }),
       });
 
       if (!res.ok) {
@@ -129,102 +157,63 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       const data = await res.json();
 
-      const newUser: User = {
+      const u: User = {
         id: data.user._id || data.user.id,
-        email: data.user.email || email,
-        name: data.user.name || name,
+        email: data.user.email,
+        name: data.user.name,
         balance: data.user.balance ?? 0,
         suspended: data.user.suspended ?? false,
       };
 
-      setUser(newUser);
+      setUser(u);
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(u));
+
       return { ok: true };
     } catch (err) {
-      console.error("Sign up error:", err);
+      console.error("signUp error", err);
       return { ok: false, error: "Server unreachable" };
     }
   };
 
+  /* =======================
+     SIGN OUT
+  ======================= */
   const signOut = () => {
     setUser(null);
-    localStorage.removeItem(USER_STORAGE_KEY);
+    localStorage.removeItem(CURRENT_USER_KEY);
   };
 
+  /* =======================
+     UPDATE BALANCE
+  ======================= */
   const updateBalance = (newBalance: number) => {
-    if (user) {
-      setUser({ ...user, balance: newBalance });
-    }
+    updateUser({ balance: newBalance });
   };
 
-  // SIMPLE refresh function - ONLY gets balance, doesn't touch user object
-  const refreshBalance = async () => {
-    if (!user?.id) return;
-
-    try {
-      console.log("🔄 Refreshing balance for user:", user.id.substring(0, 8));
-
-      // Try multiple endpoints
-      const endpoints = [
-        `${cleanApiBase}/api/users/${user.id}/balance`,
-        `${cleanApiBase}/api/auth/balance`,
-        `${cleanApiBase}/api/users/${user.id}`,
-      ];
-
-      let balanceData: any = null;
-
-      for (const endpoint of endpoints) {
-        try {
-          const res = await fetch(endpoint, {
-            headers: { "Content-Type": "application/json" },
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            console.log("✅ Balance response from", endpoint, data);
-            
-            // Extract balance from different response formats
-            if (data.balance !== undefined) {
-              balanceData = { balance: data.balance, suspended: data.suspended || false };
-              break;
-            } else if (data.user?.balance !== undefined) {
-              balanceData = { 
-                balance: data.user.balance, 
-                suspended: data.user.suspended || false 
-              };
-              break;
-            }
-          }
-        } catch (err) {
-          console.log("Failed endpoint:", endpoint, err);
-          continue;
-        }
-      }
-
-      if (balanceData && user) {
-        // ONLY update balance and suspended status
-        const updates: Partial<User> = {};
-        
-        if (balanceData.balance !== undefined) {
-          updates.balance = Number(balanceData.balance);
-        }
-        
-        if (balanceData.suspended !== undefined) {
-          updates.suspended = Boolean(balanceData.suspended);
-        }
-        
-        // Only update if we have changes
-        if (Object.keys(updates).length > 0) {
-          setUser(prev => prev ? { ...prev, ...updates } : null);
-          console.log("✅ Balance updated to:", updates.balance);
-        }
-      } else {
-        console.log("⚠️ No balance data received");
-      }
-    } catch (error) {
-      console.error("❌ Error refreshing balance:", error);
-    }
+  /* =======================
+     UPDATE PROFILE
+  ======================= */
+  const updateProfile = (
+    updates: Partial<Pick<User, "name" | "phone" | "avatar">>
+  ) => {
+    updateUser(updates);
   };
 
+  /* =======================
+     🔥 UNIVERSAL USER UPDATER
+  ======================= */
+  const updateUser = (updates: Partial<User>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...updates };
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  /* =======================
+     PROVIDER
+  ======================= */
   return (
     <AuthContext.Provider
       value={{
@@ -234,13 +223,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         signUp,
         signOut,
         updateBalance,
-        refreshBalance,
+        updateProfile,
+        updateUser, // ✅ CRITICAL
       }}
     >
       {children}
     </AuthContext.Provider>
   );
 };
+
+/* =======================
+   HOOK
+======================= */
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
