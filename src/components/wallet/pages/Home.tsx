@@ -8,7 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect } from "react";
 
-const ADMIN_EMAIL = "javonmorgan796@gmail.com"; // 🔴 change to your real admin email
+const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 
 const Home = () => {
   const { user, isLoading, updateUser } = useAuth();
@@ -17,20 +17,30 @@ const Home = () => {
     if (!user?.id) return;
 
     const API_BASE =
-      (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
+      (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com/";
 
     let timer: number;
 
     const fetchUser = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/users/${user.id}`);
-        if (!res.ok) return;
+        const res = await fetch(`${API_BASE}/api/users/${user.id}`, {
+          headers: {
+            'Authorization': `Bearer ${user.token}`, // Add auth header
+          }
+        });
+        
+        if (!res.ok) {
+          console.warn("Failed to fetch user data");
+          return;
+        }
 
         const data = await res.json();
         const fresh = data.user;
         if (!fresh) return;
 
+        // ONLY update balance and suspended status, keep other user data intact
         updateUser({
+          ...user, // Keep existing user data
           balance: fresh.balance,
           suspended: fresh.suspended,
         });
@@ -39,11 +49,14 @@ const Home = () => {
       }
     };
 
+    // Initial fetch
     fetchUser();
-    timer = window.setInterval(fetchUser, 3000);
+    
+    // Set interval for updates (consider increasing interval to reduce load)
+    timer = window.setInterval(fetchUser, 10000); // Changed to 10 seconds
 
     return () => clearInterval(timer);
-  }, [user?.id, updateUser]);
+  }, [user?.id, updateUser, user]); // Added user to dependencies
 
   if (isLoading) {
     return (
@@ -57,31 +70,27 @@ const Home = () => {
     return <Navigate to="/signin" replace />;
   }
 
-  // 📧 Open mail client
   const handleContactAdmin = () => {
     const subject = encodeURIComponent("Account Suspension – Assistance Needed");
     const body = encodeURIComponent(
       `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user.id}\nEmail: ${user.email}\n\nPlease assist.\n\nThank you.`
     );
 
-    window.location.href = `mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`;
+    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
   };
 
   return (
     <div className="min-h-screen bg-background relative">
-      {/* 🚫 ACCOUNT SUSPENDED OVERLAY */}
       {user.suspended && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
           <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-red-600 border border-red-700 text-center shadow-2xl animate-fade-in">
             <p className="text-lg font-bold text-white mb-2">
               🚫 Account Suspended
             </p>
-
             <p className="text-sm text-red-100 mb-4">
               Your account has been suspended by the administrator.
               Please contact support for assistance.
             </p>
-
             <button
               onClick={handleContactAdmin}
               className="w-full py-2 rounded-xl bg-white text-red-600 font-semibold hover:bg-red-100 transition"
@@ -92,7 +101,6 @@ const Home = () => {
         </div>
       )}
 
-      {/* 🏦 WALLET */}
       <div className="max-w-md mx-auto px-4 pb-24">
         <Header />
         <BalanceCard balance={user.balance} />
