@@ -6,16 +6,32 @@ import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 
 const Home = () => {
   const { user, isLoading, updateUser } = useAuth();
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  
+  const addLog = (message: string) => {
+    setDebugLogs(prev => [...prev, `${new Date().toISOString()}: ${message}`]);
+    console.log(message);
+  };
 
   useEffect(() => {
-    if (!user?.id) return;
+    addLog(`Home mounted. User: ${user ? `ID: ${user.id}, Balance: ${user.balance}` : 'null'}`);
+    addLog(`isLoading: ${isLoading}`);
+  }, []);
 
+  useEffect(() => {
+    if (!user?.id) {
+      addLog("No user ID available, skipping fetch");
+      return;
+    }
+
+    addLog(`Starting user fetch for ID: ${user.id}`);
+    
     const API_BASE =
       (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com/";
 
@@ -23,40 +39,65 @@ const Home = () => {
 
     const fetchUser = async () => {
       try {
+        addLog(`Fetching user data from: ${API_BASE}/api/users/${user.id}`);
+        
+        // Try with credentials/cookies
         const res = await fetch(`${API_BASE}/api/users/${user.id}`, {
+          credentials: 'include', // This preserves cookies/sessions
           headers: {
-            'Authorization': `Bearer ${user.token}`, // Add auth header
+            'Content-Type': 'application/json',
           }
         });
         
+        addLog(`Response status: ${res.status}`);
+        
         if (!res.ok) {
-          console.warn("Failed to fetch user data");
+          addLog(`Fetch failed with status: ${res.status}`);
           return;
         }
 
         const data = await res.json();
+        addLog(`Received data: ${JSON.stringify(data)}`);
+        
         const fresh = data.user;
-        if (!fresh) return;
+        if (!fresh) {
+          addLog("No user data in response");
+          return;
+        }
 
-        // ONLY update balance and suspended status, keep other user data intact
+        addLog(`Updating user: Balance ${user.balance} -> ${fresh.balance}, Suspended ${user.suspended} -> ${fresh.suspended}`);
+        
+        // Update ONLY specific fields
         updateUser({
-          ...user, // Keep existing user data
           balance: fresh.balance,
           suspended: fresh.suspended,
+          // Explicitly preserve critical fields
+          id: user.id,
+          email: user.email,
+          token: user.token,
+          name: user.name,
         });
+        
+        addLog("Update successful");
+        
       } catch (err) {
+        addLog(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
         console.error("User refresh error", err);
       }
     };
 
-    // Initial fetch
-    fetchUser();
+    // Initial fetch after a delay
+    const initialTimer = setTimeout(fetchUser, 1000);
     
-    // Set interval for updates (consider increasing interval to reduce load)
-    timer = window.setInterval(fetchUser, 10000); // Changed to 10 seconds
+    // Set interval - increased to reduce issues
+    timer = window.setInterval(fetchUser, 30000); // 30 seconds
 
-    return () => clearInterval(timer);
-  }, [user?.id, updateUser, user]); // Added user to dependencies
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(timer);
+      addLog("Cleanup - timers cleared");
+    };
+  }, [user?.id]);
 
   if (isLoading) {
     return (
@@ -67,6 +108,7 @@ const Home = () => {
   }
 
   if (!user) {
+    addLog("No user detected, redirecting to signin");
     return <Navigate to="/signin" replace />;
   }
 
@@ -75,12 +117,26 @@ const Home = () => {
     const body = encodeURIComponent(
       `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user.id}\nEmail: ${user.email}\n\nPlease assist.\n\nThank you.`
     );
-
-    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
+    window.location.href = `mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`;
   };
 
   return (
     <div className="min-h-screen bg-background relative">
+      {/* Debug Panel (remove in production) */}
+      <div className="fixed bottom-4 right-4 z-50">
+        <details className="bg-black/90 text-white p-4 rounded-lg max-w-xs max-h-64 overflow-auto">
+          <summary className="cursor-pointer font-bold">Debug Logs</summary>
+          <div className="mt-2 text-xs space-y-1">
+            {debugLogs.map((log, index) => (
+              <div key={index} className="border-b border-gray-700 pb-1">
+                {log}
+              </div>
+            ))}
+          </div>
+        </details>
+      </div>
+
+      {/* 🚫 ACCOUNT SUSPENDED OVERLAY */}
       {user.suspended && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
           <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-red-600 border border-red-700 text-center shadow-2xl animate-fade-in">
@@ -101,6 +157,7 @@ const Home = () => {
         </div>
       )}
 
+      {/* 🏦 WALLET */}
       <div className="max-w-md mx-auto px-4 pb-24">
         <Header />
         <BalanceCard balance={user.balance} />
