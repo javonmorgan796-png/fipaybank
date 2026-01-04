@@ -4,34 +4,30 @@ import { QuickActions } from "@/components/wallet/QuickActions";
 import { SendMoney } from "@/components/wallet/SendMoney";
 import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/NewAuthContext"; // Use the new context
 import { Navigate } from "react-router-dom";
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 
 const Home = () => {
-  const { user, isLoading, isRefreshing, refreshUserBalance } = useAuth();
-  const refreshIntervalRef = useRef<NodeJS.Timeout>();
+  const { user, isLoading, refreshBalance } = useAuth();
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
+  // Simple refresh on mount
   useEffect(() => {
-    if (!user?.id) return;
+    if (user?.id) {
+      console.log("🏠 Home mounted, refreshing balance...");
+      refreshBalance();
+      setLastRefresh(new Date());
+    }
+  }, [user?.id]);
 
-    // Initial refresh
-    refreshUserBalance();
-
-    // Set up interval for balance updates (every 10 seconds)
-    refreshIntervalRef.current = setInterval(() => {
-      refreshUserBalance();
-    }, 10000);
-
-    // Cleanup
-    return () => {
-      if (refreshIntervalRef.current) {
-        clearInterval(refreshIntervalRef.current);
-      }
-    };
-  }, [user?.id, refreshUserBalance]);
+  // Manual refresh handler
+  const handleRefresh = () => {
+    refreshBalance();
+    setLastRefresh(new Date());
+  };
 
   if (isLoading) {
     return (
@@ -45,6 +41,7 @@ const Home = () => {
   }
 
   if (!user) {
+    console.log("❌ No user, redirecting to signin");
     return <Navigate to="/signin" replace />;
   }
 
@@ -56,20 +53,23 @@ const Home = () => {
     window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
   };
 
-  const handleManualRefresh = () => {
-    refreshUserBalance();
-  };
-
   return (
     <div className="min-h-screen bg-background relative">
-      {/* Loading overlay during refresh */}
-      {isRefreshing && (
-        <div className="fixed top-4 right-4 z-50 bg-blue-500 text-white px-3 py-1 rounded-full text-sm animate-pulse">
-          Updating...
-        </div>
-      )}
+      {/* Simple debug info */}
+      <div className="fixed bottom-4 left-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
+        <div>User: {user?.id?.substring(0, 8)}...</div>
+        <div>Balance: ${user?.balance}</div>
+        {lastRefresh && (
+          <div>Last refresh: {lastRefresh.toLocaleTimeString()}</div>
+        )}
+        <button 
+          onClick={handleRefresh}
+          className="mt-1 px-2 py-1 bg-blue-500 rounded text-xs"
+        >
+          Refresh
+        </button>
+      </div>
 
-      {/* 🚫 ACCOUNT SUSPENDED OVERLAY */}
       {user.suspended && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
           <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-red-600 border border-red-700 text-center shadow-2xl animate-fade-in">
@@ -90,9 +90,8 @@ const Home = () => {
         </div>
       )}
 
-      {/* 🏦 WALLET */}
       <div className="max-w-md mx-auto px-4 pb-24">
-        <Header onRefresh={handleManualRefresh} />
+        <Header onRefresh={handleRefresh} />
         <BalanceCard balance={user.balance} />
         <QuickActions />
         <SendMoney />
