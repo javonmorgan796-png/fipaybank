@@ -6,89 +6,32 @@ import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 
 const Home = () => {
-  const { user, isLoading, refreshUserBalance } = useAuth();
-  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null);
-  const [debugInfo, setDebugInfo] = useState<string[]>([]);
-  const isMounted = useRef(true);
-
-  // Debug: Log user state changes
-  useEffect(() => {
-    console.log("🔍 [DEBUG] Current user state:", {
-      id: user?.id,
-      balance: user?.balance,
-      hasUser: !!user,
-      isLoading: isLoading,
-      timestamp: new Date().toISOString()
-    });
-
-    setDebugInfo(prev => [...prev.slice(-9), `🕐 ${new Date().toLocaleTimeString()}: User - ${user ? `ID: ${user.id?.substring(0, 8)}..., Balance: $${user.balance}` : 'null'}, Loading: ${isLoading}`]);
-  }, [user, isLoading]);
+  const { user, isLoading, isRefreshing, refreshUserBalance } = useAuth();
+  const refreshIntervalRef = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
-    isMounted.current = true;
-    setDebugInfo(prev => [...prev, `🚀 Home mounted at ${new Date().toLocaleTimeString()}`]);
-    
-    return () => {
-      isMounted.current = false;
-      if (refreshInterval) {
-        clearInterval(refreshInterval);
-        setDebugInfo(prev => [...prev, `⏹️ Interval cleared at ${new Date().toLocaleTimeString()}`]);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!user?.id || isLoading) return;
-
-    setDebugInfo(prev => [...prev, `🔄 Starting refresh for user: ${user.id.substring(0, 8)}...`]);
+    if (!user?.id) return;
 
     // Initial refresh
-    refreshUserBalance().then(() => {
-      setDebugInfo(prev => [...prev, `✅ Initial refresh completed at ${new Date().toLocaleTimeString()}`]);
-    }).catch(err => {
-      setDebugInfo(prev => [...prev, `❌ Initial refresh failed: ${err.message}`]);
-    });
+    refreshUserBalance();
 
-    // Set up interval for balance updates
-    const interval = setInterval(() => {
-      if (isMounted.current && user?.id) {
-        setDebugInfo(prev => [...prev.slice(-9), `🔄 Auto-refresh at ${new Date().toLocaleTimeString()}`]);
-        refreshUserBalance().then(() => {
-          setDebugInfo(prev => [...prev.slice(-9), `✅ Auto-refresh completed`]);
-        }).catch(err => {
-          setDebugInfo(prev => [...prev.slice(-9), `❌ Auto-refresh failed: ${err.message}`]);
-        });
-      }
-    }, 15000); // Every 15 seconds
+    // Set up interval for balance updates (every 10 seconds)
+    refreshIntervalRef.current = setInterval(() => {
+      refreshUserBalance();
+    }, 10000);
 
-    setRefreshInterval(interval);
-    setDebugInfo(prev => [...prev, `⏱️ Interval set: 15s`]);
-
+    // Cleanup
     return () => {
-      if (interval) {
-        clearInterval(interval);
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [user?.id, isLoading, refreshUserBalance]);
-
-  // Debug: Check localStorage
-  useEffect(() => {
-    const checkStorage = () => {
-      const stored = localStorage.getItem('current_user');
-      console.log("💾 [DEBUG] localStorage current_user:", stored ? JSON.parse(stored) : 'null');
-      setDebugInfo(prev => [...prev.slice(-9), `💾 Storage: ${stored ? 'Has user data' : 'Empty'}`]);
-    };
-    
-    checkStorage();
-    const storageInterval = setInterval(checkStorage, 5000);
-    
-    return () => clearInterval(storageInterval);
-  }, []);
+  }, [user?.id, refreshUserBalance]);
 
   if (isLoading) {
     return (
@@ -102,8 +45,6 @@ const Home = () => {
   }
 
   if (!user) {
-    console.log("🔴 [DEBUG] No user detected, redirecting to signin");
-    setDebugInfo(prev => [...prev, `🔴 Redirecting to signin at ${new Date().toLocaleTimeString()}`]);
     return <Navigate to="/signin" replace />;
   }
 
@@ -115,60 +56,18 @@ const Home = () => {
     window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
   };
 
-  // Manual refresh handler
   const handleManualRefresh = () => {
-    setDebugInfo(prev => [...prev, `👆 Manual refresh triggered at ${new Date().toLocaleTimeString()}`]);
-    refreshUserBalance().then(() => {
-      setDebugInfo(prev => [...prev, `✅ Manual refresh completed`]);
-    }).catch(err => {
-      setDebugInfo(prev => [...prev, `❌ Manual refresh failed: ${err.message}`]);
-    });
+    refreshUserBalance();
   };
-
-  // Toggle debug panel
-  const [showDebug, setShowDebug] = useState(false);
 
   return (
     <div className="min-h-screen bg-background relative">
-      {/* Debug Panel */}
-      <div className="fixed bottom-4 right-4 z-50">
-        <button
-          onClick={() => setShowDebug(!showDebug)}
-          className="mb-2 px-3 py-1 bg-gray-800 text-white text-xs rounded-full"
-        >
-          {showDebug ? 'Hide Debug' : 'Show Debug'}
-        </button>
-        
-        {showDebug && (
-          <div className="bg-black/90 text-white p-4 rounded-lg max-w-xs max-h-64 overflow-auto">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-bold">Debug Info</h3>
-              <button 
-                onClick={() => setDebugInfo([])}
-                className="text-xs px-2 py-1 bg-red-600 rounded"
-              >
-                Clear
-              </button>
-            </div>
-            <div className="text-xs space-y-1">
-              <div className="border-b border-gray-700 pb-1">
-                <strong>User ID:</strong> {user?.id?.substring(0, 16)}...
-              </div>
-              <div className="border-b border-gray-700 pb-1">
-                <strong>Balance:</strong> ${user?.balance}
-              </div>
-              <div className="border-b border-gray-700 pb-1">
-                <strong>Loading:</strong> {isLoading ? 'Yes' : 'No'}
-              </div>
-              {debugInfo.map((log, index) => (
-                <div key={index} className="border-b border-gray-700 pb-1 text-[10px]">
-                  {log}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Loading overlay during refresh */}
+      {isRefreshing && (
+        <div className="fixed top-4 right-4 z-50 bg-blue-500 text-white px-3 py-1 rounded-full text-sm animate-pulse">
+          Updating...
+        </div>
+      )}
 
       {/* 🚫 ACCOUNT SUSPENDED OVERLAY */}
       {user.suspended && (
