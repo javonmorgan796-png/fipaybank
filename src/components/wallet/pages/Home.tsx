@@ -1,4 +1,3 @@
-import { Header } from "@/components/wallet/Header";
 import { BalanceCard } from "@/components/wallet/BalanceCard";
 import { QuickActions } from "@/components/wallet/QuickActions";
 import { SendMoney } from "@/components/wallet/SendMoney";
@@ -17,7 +16,7 @@ const Home = () => {
     if (!user?.id) return;
 
     const API_BASE =
-      (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com";
+      (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com/";
 
     let timer: number;
 
