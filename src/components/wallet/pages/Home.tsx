@@ -3,11 +3,12 @@ import { QuickActions } from "@/components/wallet/QuickActions";
 import { SendMoney } from "@/components/wallet/SendMoney";
 import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
+import { Header } from "@/components/wallet/Header"; // ✅ FIX 1
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect } from "react";
 
-const ADMIN_EMAIL = "javonmorgan796@gmail.com"; // 🔴 change to your real admin email
+const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 
 const Home = () => {
   const { user, isLoading, updateUser } = useAuth();
@@ -16,7 +17,7 @@ const Home = () => {
     if (!user?.id) return;
 
     const API_BASE =
-      (import.meta.env.VITE_API_BASE as string) || "https://fipaybank.onrender.com/";
+      import.meta.env.VITE_API_BASE ?? "https://fipaybank.onrender.com";
 
     let timer: number;
 
@@ -41,7 +42,7 @@ const Home = () => {
     fetchUser();
     timer = window.setInterval(fetchUser, 3000);
 
-    return () => clearInterval(timer);
+    return () => window.clearInterval(timer);
   }, [user?.id, updateUser]);
 
   if (isLoading) {
@@ -56,11 +57,19 @@ const Home = () => {
     return <Navigate to="/signin" replace />;
   }
 
-  // 📧 Open mail client
   const handleContactAdmin = () => {
     const subject = encodeURIComponent("Account Suspension – Assistance Needed");
     const body = encodeURIComponent(
-      `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user.id}\nEmail: ${user.email}\n\nPlease assist.\n\nThank you.`
+      `Hello Admin,
+
+My account has been suspended.
+
+User ID: ${user.id}
+Email: ${user.email}
+
+Please assist.
+
+Thank you.`
     );
 
     window.location.href = `mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`;
