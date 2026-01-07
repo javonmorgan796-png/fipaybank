@@ -6,112 +6,150 @@ import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/NewAuthContext";
 import { Navigate } from "react-router-dom";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 const BALANCE_UPDATE_THRESHOLD = 0.01;
+const REAL_TIME_CHECK_INTERVAL = 5000; // Check every 5 seconds for suspension
+const BALANCE_UPDATE_INTERVAL = 30000; // Check balance every 30 seconds
 
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [balanceUpdateMessage, setBalanceUpdateMessage] = useState("");
+  const [lastSuspensionCheck, setLastSuspensionCheck] = useState<Date | null>(null);
   const previousBalance = useRef<number | null>(null);
   const previousSuspendedStatus = useRef<boolean | null>(null);
-  const [hasShownSuspendedPopup, setHasShownSuspendedPopup] = useState(false);
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Check if user's balance has been updated
-  const checkBalanceUpdate = () => {
-    if (!user || previousBalance.current === null) {
-      previousBalance.current = user?.balance || 0;
-      return false;
+  // Function to check user status in real-time
+  const checkUserStatus = useCallback(async () => {
+    if (!user?.id) return;
+    
+    try {
+      console.log("🔍 Real-time status check for user:", user.id.substring(0, 8));
+      
+      // Call API to get latest user data
+      const response = await fetch(`/api/users/${user.id}/status`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (response.ok) {
+        const latestUserData = await response.json();
+        setLastSuspensionCheck(new Date());
+        
+        // Check if suspension status changed
+        if (previousSuspendedStatus.current !== null && 
+            latestUserData.suspended !== previousSuspendedStatus.current) {
+          
+          console.log("🔄 Suspension status changed:", {
+            from: previousSuspendedStatus.current,
+            to: latestUserData.suspended
+          });
+          
+          // Update local state if needed (this depends on your auth context)
+          // If your auth context doesn't update automatically, refresh it
+          refreshBalance();
+        }
+        
+        // Check if balance changed
+        if (previousBalance.current !== null && 
+            Math.abs(latestUserData.balance - previousBalance.current) > BALANCE_UPDATE_THRESHOLD) {
+          handleBalanceUpdate(latestUserData.balance);
+        }
+        
+        // Update refs
+        previousSuspendedStatus.current = latestUserData.suspended;
+        previousBalance.current = latestUserData.balance;
+      }
+    } catch (error) {
+      console.error("Error checking user status:", error);
     }
+  }, [user?.id, refreshBalance]);
 
-    const currentBalance = user.balance || 0;
-    const balanceDifference = Math.abs(currentBalance - previousBalance.current);
+  // Handle balance update
+  const handleBalanceUpdate = (newBalance: number) => {
+    if (previousBalance.current === null) return;
     
-    if (balanceDifference > BALANCE_UPDATE_THRESHOLD) {
-      setBalanceUpdated(true);
-      setBalanceUpdateMessage(
-        currentBalance > previousBalance.current 
-          ? `Your balance has increased by $${balanceDifference.toFixed(2)}!`
-          : `Your balance has decreased by $${balanceDifference.toFixed(2)}.`
-      );
-      
-      previousBalance.current = currentBalance;
-      
-      setTimeout(() => {
-        setBalanceUpdated(false);
-      }, 5000);
-      
-      return true;
-    }
+    const balanceDifference = Math.abs(newBalance - previousBalance.current);
     
-    return false;
+    setBalanceUpdated(true);
+    setBalanceUpdateMessage(
+      newBalance > previousBalance.current 
+        ? `Your balance has increased by $${balanceDifference.toFixed(2)}!`
+        : `Your balance has decreased by $${balanceDifference.toFixed(2)}.`
+    );
+    
+    setTimeout(() => {
+      setBalanceUpdated(false);
+    }, 5000);
   };
 
-  // Simple refresh on mount
+  // Initialize and set up real-time polling
   useEffect(() => {
     if (user?.id) {
-      console.log("🏠 Home mounted, refreshing balance...");
+      console.log("🏠 Home mounted, setting up real-time monitoring...");
       refreshBalance();
       setLastRefresh(new Date());
       
       // Initialize previous values
       previousBalance.current = user.balance || 0;
       previousSuspendedStatus.current = user.suspended || false;
-      
-      // Reset suspended popup flag when user changes
-      setHasShownSuspendedPopup(false);
     }
   }, [user?.id]);
 
-  // Check for suspended status changes - FIXED LOGIC
+  // Set up real-time polling interval
   useEffect(() => {
-    if (!user) return;
-
-    console.log("🔄 Checking suspension status:", {
-      currentSuspended: user.suspended,
-      previousSuspended: previousSuspendedStatus.current,
-      hasShownPopup: hasShownSuspendedPopup
-    });
-
-    // If user is suspended AND we haven't shown the popup yet
-    if (user.suspended && !hasShownSuspendedPopup) {
-      console.log("🚨 Showing suspended popup");
-      setHasShownSuspendedPopup(true);
-    }
-    
-    // Always update the previous status
-    previousSuspendedStatus.current = user.suspended;
-  }, [user?.suspended, hasShownSuspendedPopup]);
-
-  // Manual refresh handler with balance update check
-  const handleRefresh = () => {
-    refreshBalance();
-    setLastRefresh(new Date());
-    
-    // Check for balance update after a short delay
-    setTimeout(() => {
-      checkBalanceUpdate();
-    }, 500);
-  };
-
-  // Auto-refresh balance every 30 seconds (only for active users)
-  useEffect(() => {
-    if (user?.id && !user?.suspended) {
-      console.log("⏰ Setting up auto-refresh interval");
-      const intervalId = setInterval(() => {
-        console.log("🔄 Auto-refreshing balance...");
-        handleRefresh();
-      }, 30000);
-
+    if (user?.id) {
+      // Clear any existing interval
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+      
+      console.log("⏰ Setting up real-time polling...");
+      
+      // Initial check
+      checkUserStatus();
+      
+      // Set up interval for real-time checks (more frequent for suspension)
+      pollingIntervalRef.current = setInterval(() => {
+        checkUserStatus();
+      }, REAL_TIME_CHECK_INTERVAL);
+      
+      // Cleanup
       return () => {
-        console.log("🧹 Clearing auto-refresh interval");
-        clearInterval(intervalId);
+        if (pollingIntervalRef.current) {
+          console.log("🧹 Cleaning up polling interval");
+          clearInterval(pollingIntervalRef.current);
+        }
       };
     }
-  }, [user?.id, user?.suspended]);
+  }, [user?.id, checkUserStatus]);
+
+  // Manual refresh handler
+  const handleRefresh = useCallback(() => {
+    console.log("🔄 Manual refresh triggered");
+    refreshBalance();
+    setLastRefresh(new Date());
+    checkUserStatus();
+  }, [refreshBalance, checkUserStatus]);
+
+  // Auto-refresh balance (less frequent)
+  useEffect(() => {
+    if (user?.id && !user?.suspended) {
+      const balanceIntervalId = setInterval(() => {
+        console.log("💰 Auto-refreshing balance...");
+        refreshBalance();
+      }, BALANCE_UPDATE_INTERVAL);
+
+      return () => clearInterval(balanceIntervalId);
+    }
+  }, [user?.id, user?.suspended, refreshBalance]);
 
   const handleContactAdmin = () => {
     const subject = encodeURIComponent("Account Suspension – Assistance Needed");
@@ -123,11 +161,6 @@ const Home = () => {
 
   const handleRefreshFromPopup = () => {
     handleRefresh();
-  };
-
-  const closeSuspendedPopup = () => {
-    // Don't hide the popup completely, just minimize its persistence
-    // The popup will still show if user.suspended is true
   };
 
   if (isLoading) {
@@ -148,20 +181,36 @@ const Home = () => {
 
   return (
     <div className="min-h-screen bg-background relative">
+      {/* Real-time status indicator */}
+      <div className="fixed top-4 right-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${user.suspended ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
+          <span>Real-time: {user.suspended ? 'Suspended' : 'Active'}</span>
+        </div>
+        {lastSuspensionCheck && (
+          <div className="text-xs text-gray-300 mt-1">
+            Last check: {lastSuspensionCheck.toLocaleTimeString()}
+          </div>
+        )}
+      </div>
+
       {/* Simple debug info */}
       <div className="fixed bottom-4 left-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
         <div>User: {user?.id?.substring(0, 8)}...</div>
         <div>Balance: ${user?.balance?.toFixed(2)}</div>
-        <div>Status: {user?.suspended ? "Suspended" : "Active"}</div>
-        <div>Popup shown: {hasShownSuspendedPopup ? "Yes" : "No"}</div>
+        <div>Status: {user?.suspended ? '🚫 Suspended' : '✅ Active'}</div>
+        <div className="flex items-center gap-1">
+          <div className={`w-2 h-2 rounded-full ${user.suspended ? 'bg-red-500' : 'bg-green-500'}`}></div>
+          <span>Live monitoring</span>
+        </div>
         {lastRefresh && (
           <div>Last refresh: {lastRefresh.toLocaleTimeString()}</div>
         )}
         <button 
           onClick={handleRefresh}
-          className="mt-1 px-2 py-1 bg-blue-500 rounded text-xs"
+          className="mt-1 px-2 py-1 bg-blue-500 rounded text-xs hover:bg-blue-600 transition"
         >
-          Refresh Balance
+          Refresh Now
         </button>
       </div>
 
@@ -182,19 +231,19 @@ const Home = () => {
         </div>
       )}
 
-      {/* Suspended Popup - SIMPLIFIED LOGIC */}
+      {/* Suspended Popup */}
       {user.suspended && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center animate-fade-in">
           <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 border border-red-700 text-center shadow-2xl">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center animate-pulse">
               <span className="text-2xl">🚫</span>
             </div>
             <p className="text-xl font-bold text-white mb-2">
               Account Suspended
             </p>
             <p className="text-sm text-red-100 mb-4">
-              Your account has been temporarily suspended by the administrator.
-              All wallet functions are currently unavailable.
+              ⚠️ Your account has been suspended by the administrator.
+              All wallet functions are disabled until further notice.
             </p>
             
             <div className="mb-6 p-3 rounded-lg bg-red-500/20">
@@ -205,7 +254,7 @@ const Home = () => {
                 <span className="font-semibold">Current Balance:</span> ${user?.balance?.toFixed(2)}
               </p>
               <p className="text-xs text-red-200 mt-1">
-                <span className="font-semibold">Status:</span> Account Suspended
+                <span className="font-semibold">Last Updated:</span> {lastSuspensionCheck?.toLocaleTimeString() || 'Checking...'}
               </p>
             </div>
             
@@ -214,15 +263,21 @@ const Home = () => {
                 onClick={handleContactAdmin}
                 className="w-full py-3 rounded-xl bg-white text-red-600 font-semibold hover:bg-red-50 transition duration-200"
               >
-                Contact Admin Support
+                📧 Contact Admin Support
               </button>
               
               <button
                 onClick={handleRefreshFromPopup}
                 className="w-full py-3 rounded-xl bg-red-500/30 text-white font-semibold hover:bg-red-500/40 transition duration-200 border border-red-500/50"
               >
-                Refresh Account Status
+                🔄 Refresh Account Status
               </button>
+            </div>
+            
+            <div className="mt-4 pt-4 border-t border-red-500/30">
+              <p className="text-xs text-red-200">
+                Real-time monitoring is active. This popup will automatically update.
+              </p>
             </div>
           </div>
         </div>
