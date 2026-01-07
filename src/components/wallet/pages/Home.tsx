@@ -4,33 +4,25 @@ import { QuickActions } from "@/components/wallet/QuickActions";
 import { SendMoney } from "@/components/wallet/SendMoney";
 import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
-import { useAuth } from "@/contexts/NewAuthContext"; // Use the new context
+import { useAuth } from "@/contexts/NewAuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
-const BALANCE_UPDATE_THRESHOLD = 0.01; // Minimum change to consider as an update
+const BALANCE_UPDATE_THRESHOLD = 0.01;
 
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [showSuspendedPopup, setShowSuspendedPopup] = useState(false);
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [balanceUpdateMessage, setBalanceUpdateMessage] = useState("");
   const previousBalance = useRef<number | null>(null);
   const previousSuspendedStatus = useRef<boolean | null>(null);
-
-  // Display suspended popup when user is suspended
-  const displaySuspendedPopup = () => {
-    if (user?.suspended) {
-      setShowSuspendedPopup(true);
-    }
-  };
+  const [hasShownSuspendedPopup, setHasShownSuspendedPopup] = useState(false);
 
   // Check if user's balance has been updated
   const checkBalanceUpdate = () => {
     if (!user || previousBalance.current === null) {
-      // First time check, store current balance
       previousBalance.current = user?.balance || 0;
       return false;
     }
@@ -46,10 +38,8 @@ const Home = () => {
           : `Your balance has decreased by $${balanceDifference.toFixed(2)}.`
       );
       
-      // Update the previous balance for next check
       previousBalance.current = currentBalance;
       
-      // Auto-hide the message after 5 seconds
       setTimeout(() => {
         setBalanceUpdated(false);
       }, 5000);
@@ -70,51 +60,56 @@ const Home = () => {
       // Initialize previous values
       previousBalance.current = user.balance || 0;
       previousSuspendedStatus.current = user.suspended || false;
+      
+      // Reset suspended popup flag when user changes
+      setHasShownSuspendedPopup(false);
     }
   }, [user?.id]);
 
-  // Check for suspended status changes
+  // Check for suspended status changes - FIXED LOGIC
   useEffect(() => {
-    if (user && previousSuspendedStatus.current !== null) {
-      // If user just got suspended
-      if (user.suspended && !previousSuspendedStatus.current) {
-        displaySuspendedPopup();
-      }
-      
-      // Update previous suspended status
-      previousSuspendedStatus.current = user.suspended;
-    } else if (user) {
-      // First time setting
-      previousSuspendedStatus.current = user.suspended || false;
-      
-      // Display popup if already suspended
-      if (user.suspended) {
-        displaySuspendedPopup();
-      }
+    if (!user) return;
+
+    console.log("🔄 Checking suspension status:", {
+      currentSuspended: user.suspended,
+      previousSuspended: previousSuspendedStatus.current,
+      hasShownPopup: hasShownSuspendedPopup
+    });
+
+    // If user is suspended AND we haven't shown the popup yet
+    if (user.suspended && !hasShownSuspendedPopup) {
+      console.log("🚨 Showing suspended popup");
+      setHasShownSuspendedPopup(true);
     }
-  }, [user?.suspended]);
+    
+    // Always update the previous status
+    previousSuspendedStatus.current = user.suspended;
+  }, [user?.suspended, hasShownSuspendedPopup]);
 
   // Manual refresh handler with balance update check
   const handleRefresh = () => {
-    const oldBalance = user?.balance || 0;
     refreshBalance();
     setLastRefresh(new Date());
     
-    // Check for balance update after a short delay to allow state update
+    // Check for balance update after a short delay
     setTimeout(() => {
       checkBalanceUpdate();
     }, 500);
   };
 
-  // Auto-refresh balance every 30 seconds
+  // Auto-refresh balance every 30 seconds (only for active users)
   useEffect(() => {
     if (user?.id && !user?.suspended) {
+      console.log("⏰ Setting up auto-refresh interval");
       const intervalId = setInterval(() => {
         console.log("🔄 Auto-refreshing balance...");
         handleRefresh();
-      }, 30000); // 30 seconds
+      }, 30000);
 
-      return () => clearInterval(intervalId);
+      return () => {
+        console.log("🧹 Clearing auto-refresh interval");
+        clearInterval(intervalId);
+      };
     }
   }, [user?.id, user?.suspended]);
 
@@ -126,13 +121,13 @@ const Home = () => {
     window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
   };
 
-  const closeSuspendedPopup = () => {
-    setShowSuspendedPopup(false);
+  const handleRefreshFromPopup = () => {
+    handleRefresh();
   };
 
-  const handleRefreshFromPopup = () => {
-    closeSuspendedPopup();
-    handleRefresh();
+  const closeSuspendedPopup = () => {
+    // Don't hide the popup completely, just minimize its persistence
+    // The popup will still show if user.suspended is true
   };
 
   if (isLoading) {
@@ -158,6 +153,7 @@ const Home = () => {
         <div>User: {user?.id?.substring(0, 8)}...</div>
         <div>Balance: ${user?.balance?.toFixed(2)}</div>
         <div>Status: {user?.suspended ? "Suspended" : "Active"}</div>
+        <div>Popup shown: {hasShownSuspendedPopup ? "Yes" : "No"}</div>
         {lastRefresh && (
           <div>Last refresh: {lastRefresh.toLocaleTimeString()}</div>
         )}
@@ -186,8 +182,8 @@ const Home = () => {
         </div>
       )}
 
-      {/* Suspended Popup */}
-      {(showSuspendedPopup || user.suspended) && (
+      {/* Suspended Popup - SIMPLIFIED LOGIC */}
+      {user.suspended && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center animate-fade-in">
           <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 border border-red-700 text-center shadow-2xl">
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center">
@@ -208,6 +204,9 @@ const Home = () => {
               <p className="text-xs text-red-200 mt-1">
                 <span className="font-semibold">Current Balance:</span> ${user?.balance?.toFixed(2)}
               </p>
+              <p className="text-xs text-red-200 mt-1">
+                <span className="font-semibold">Status:</span> Account Suspended
+              </p>
             </div>
             
             <div className="space-y-3">
@@ -224,15 +223,6 @@ const Home = () => {
               >
                 Refresh Account Status
               </button>
-              
-              {!showSuspendedPopup && (
-                <button
-                  onClick={closeSuspendedPopup}
-                  className="w-full py-2 text-xs text-red-200 hover:text-white transition"
-                >
-                  Continue in Read-Only Mode
-                </button>
-              )}
             </div>
           </div>
         </div>
