@@ -4,7 +4,7 @@ import { QuickActions } from "@/components/wallet/QuickActions";
 import { SendMoney } from "@/components/wallet/SendMoney";
 import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
-import { useAuth } from "@/contexts/NewAuthContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
 
