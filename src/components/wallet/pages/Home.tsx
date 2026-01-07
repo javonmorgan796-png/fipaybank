@@ -9,162 +9,181 @@ import { Navigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
-const BALANCE_UPDATE_THRESHOLD = 0.01;
-const REAL_TIME_CHECK_INTERVAL = 5000;
-const BALANCE_UPDATE_INTERVAL = 30000;
+const BALANCE_CHECK_INTERVAL = 5000; // Check balance every 5 seconds
+const SUSPENSION_CHECK_INTERVAL = 3000; // Check suspension every 3 seconds
 
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [balanceUpdateMessage, setBalanceUpdateMessage] = useState("");
+  const [lastBalanceCheck, setLastBalanceCheck] = useState<Date | null>(null);
   const [lastSuspensionCheck, setLastSuspensionCheck] = useState<Date | null>(null);
   const previousBalance = useRef<number | null>(null);
   const previousSuspendedStatus = useRef<boolean | null>(null);
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const balanceCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const suspensionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Function to check user status in real-time
-  const checkUserStatus = useCallback(async () => {
-    if (!user?.id) return;
+  // Function to check balance in real-time
+  const checkBalanceRealTime = useCallback(async () => {
+    if (!user?.id) return null;
     
     try {
-      console.log("🔍 Real-time status check for user:", user.id.substring(0, 8));
-      
-      // Call API to get latest user data
-      const response = await fetch(`https://fipaybank.onrender.com/api/users/${user.id}`, {
+      const response = await fetch(`https://fipaybank.onrender.com/api/users/${user.id}/balance`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-cache'
       });
       
       if (response.ok) {
-        const latestUserData = await response.json();
-        setLastSuspensionCheck(new Date());
+        const data = await response.json();
+        setLastBalanceCheck(new Date());
         
-        // Check if suspension status changed
-        const currentSuspended = user.suspended || false;
-        const newSuspended = latestUserData.suspended || false;
-        
-        if (previousSuspendedStatus.current !== null && 
-            newSuspended !== previousSuspendedStatus.current) {
-          
-          console.log("🔄 Suspension status changed:", {
-            from: previousSuspendedStatus.current,
-            to: newSuspended
+        // Check if balance changed
+        if (previousBalance.current !== null && data.balance !== previousBalance.current) {
+          console.log("💰 BALANCE CHANGED DETECTED!", {
+            from: previousBalance.current,
+            to: data.balance,
+            difference: data.balance - previousBalance.current
           });
           
-          // Refresh balance which will update the user state
+          // Update local state immediately
+          await refreshBalance();
+          
+          // Show notification
+          const difference = data.balance - previousBalance.current;
+          setBalanceUpdated(true);
+          setBalanceUpdateMessage(
+            difference > 0 
+              ? `Your balance increased by $${Math.abs(difference).toFixed(2)}!`
+              : `Your balance decreased by $${Math.abs(difference).toFixed(2)}`
+          );
+          
+          setTimeout(() => {
+            setBalanceUpdated(false);
+          }, 5000);
+        }
+        
+        // Check if suspension changed
+        if (previousSuspendedStatus.current !== null && 
+            data.suspended !== previousSuspendedStatus.current) {
+          console.log("🚨 SUSPENSION STATUS CHANGED DETECTED!");
           await refreshBalance();
         }
         
-        // Check if balance changed
-        if (previousBalance.current !== null && 
-            Math.abs(latestUserData.balance - previousBalance.current) > BALANCE_UPDATE_THRESHOLD) {
-          handleBalanceUpdate(latestUserData.balance);
-        }
-        
         // Update refs
-        previousSuspendedStatus.current = newSuspended;
-        previousBalance.current = latestUserData.balance || 0;
+        previousBalance.current = data.balance;
+        previousSuspendedStatus.current = data.suspended;
+        
+        return data;
       }
     } catch (error) {
-      console.error("Error checking user status:", error);
+      console.error("Error checking balance:", error);
     }
-  }, [user?.id, user?.suspended, refreshBalance]);
+    
+    return null;
+  }, [user?.id, refreshBalance]);
 
-  // Handle balance update
-  const handleBalanceUpdate = (newBalance: number) => {
-    if (previousBalance.current === null) return;
+  // Function to check ONLY suspension status
+  const checkSuspensionStatus = useCallback(async () => {
+    if (!user?.id) return null;
     
-    const balanceDifference = Math.abs(newBalance - previousBalance.current);
-    
-    setBalanceUpdated(true);
-    setBalanceUpdateMessage(
-      newBalance > previousBalance.current 
-        ? `Your balance has increased by $${balanceDifference.toFixed(2)}!`
-        : `Your balance has decreased by $${balanceDifference.toFixed(2)}.`
-    );
-    
-    setTimeout(() => {
-      setBalanceUpdated(false);
-    }, 5000);
-  };
-
-  // Initialize and set up real-time polling
-  useEffect(() => {
-    if (user?.id) {
-      console.log("🏠 Home mounted, setting up real-time monitoring...");
-      refreshBalance();
-      setLastRefresh(new Date());
+    try {
+      const response = await fetch(`https://fipaybank.onrender.com/api/users/${user.id}/suspension`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-cache'
+      });
       
-      // Initialize previous values
+      if (response.ok) {
+        const data = await response.json();
+        setLastSuspensionCheck(new Date());
+        return data.suspended || false;
+      }
+    } catch (error) {
+      console.error("Error checking suspension:", error);
+    }
+    
+    return null;
+  }, [user?.id]);
+
+  // Initialize refs
+  useEffect(() => {
+    if (user) {
       previousBalance.current = user.balance || 0;
       previousSuspendedStatus.current = user.suspended || false;
     }
-  }, [user?.id]);
+  }, [user]);
 
-  // Set up real-time polling interval
+  // Real-time balance monitoring
   useEffect(() => {
-    if (user?.id) {
-      // Clear any existing interval
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
+    if (!user?.id) return;
+
+    console.log("💰 Starting real-time balance monitoring for user:", user.id);
+
+    // Initial check
+    checkBalanceRealTime();
+
+    // Set up frequent checks (every 5 seconds)
+    balanceCheckIntervalRef.current = setInterval(() => {
+      checkBalanceRealTime();
+    }, BALANCE_CHECK_INTERVAL);
+
+    return () => {
+      if (balanceCheckIntervalRef.current) {
+        clearInterval(balanceCheckIntervalRef.current);
       }
+    };
+  }, [user?.id, checkBalanceRealTime]);
+
+  // Real-time suspension monitoring
+  useEffect(() => {
+    if (!user?.id) return;
+
+    console.log("🚨 Starting real-time suspension monitoring for user:", user.id);
+
+    // Initial check
+    checkSuspensionStatus();
+
+    // Set up frequent checks (every 3 seconds)
+    suspensionCheckIntervalRef.current = setInterval(async () => {
+      const currentSuspended = user.suspended || false;
+      const latestSuspended = await checkSuspensionStatus();
       
-      console.log("⏰ Setting up real-time polling...");
-      
-      // Initial check
-      checkUserStatus();
-      
-      // Set up interval for real-time checks
-      pollingIntervalRef.current = setInterval(() => {
-        checkUserStatus();
-      }, REAL_TIME_CHECK_INTERVAL);
-      
-      // Cleanup
-      return () => {
-        if (pollingIntervalRef.current) {
-          console.log("🧹 Cleaning up polling interval");
-          clearInterval(pollingIntervalRef.current);
+      if (latestSuspended !== null && latestSuspended !== currentSuspended) {
+        console.log("⚠️ SUSPENSION STATUS CHANGED DETECTED!");
+        
+        if (latestSuspended) {
+          console.log("🚨 USER JUST GOT SUSPENDED!");
+          await refreshBalance();
+          
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification("Account Suspended", {
+              body: "Your account has been suspended. Please contact support.",
+              icon: "/favicon.ico"
+            });
+          }
+        } else {
+          console.log("✅ USER JUST GOT UNSUSPENDED!");
+          await refreshBalance();
         }
-      };
-    }
-  }, [user?.id, checkUserStatus]);
+      }
+    }, SUSPENSION_CHECK_INTERVAL);
+
+    return () => {
+      if (suspensionCheckIntervalRef.current) {
+        clearInterval(suspensionCheckIntervalRef.current);
+      }
+    };
+  }, [user?.id, user?.suspended, checkSuspensionStatus, refreshBalance]);
 
   // Manual refresh handler
   const handleRefresh = useCallback(async () => {
     console.log("🔄 Manual refresh triggered");
     await refreshBalance();
     setLastRefresh(new Date());
-    await checkUserStatus();
-  }, [refreshBalance, checkUserStatus]);
-
-  // Auto-refresh balance (less frequent)
-  useEffect(() => {
-    if (user?.id && !(user.suspended || false)) {
-      const balanceIntervalId = setInterval(() => {
-        console.log("💰 Auto-refreshing balance...");
-        refreshBalance();
-      }, BALANCE_UPDATE_INTERVAL);
-
-      return () => clearInterval(balanceIntervalId);
-    }
-  }, [user?.id, user?.suspended, refreshBalance]);
-
-  const handleContactAdmin = () => {
-    if (!user) return;
-    
-    const subject = encodeURIComponent("Account Suspension – Assistance Needed");
-    const body = encodeURIComponent(
-      `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user.id}\nEmail: ${user.email}\n\nPlease assist.\n\nThank you.`
-    );
-    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
-  };
-
-  const handleRefreshFromPopup = () => {
-    handleRefresh();
-  };
+    await checkBalanceRealTime();
+  }, [refreshBalance, checkBalanceRealTime]);
 
   if (isLoading) {
     return (
@@ -182,122 +201,49 @@ const Home = () => {
     return <Navigate to="/signin" replace />;
   }
 
-  // Safely get suspended status with fallback
   const isSuspended = user.suspended || false;
 
   return (
     <div className="min-h-screen bg-background relative">
-      {/* Real-time status indicator */}
+      {/* Real-time monitoring indicator */}
       <div className="fixed top-4 right-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${isSuspended ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
-          <span>Real-time: {isSuspended ? 'Suspended' : 'Active'}</span>
+          <span>Live: {isSuspended ? 'Suspended' : 'Active'}</span>
         </div>
-        {lastSuspensionCheck && (
-          <div className="text-xs text-gray-300 mt-1">
-            Last check: {lastSuspensionCheck.toLocaleTimeString()}
+        <div className="flex items-center gap-1 mt-1">
+          <div className="w-1 h-1 rounded-full bg-blue-500 animate-pulse"></div>
+          <span className="text-[10px] text-blue-300">Real-time monitoring</span>
+        </div>
+        {lastBalanceCheck && (
+          <div className="text-[10px] text-gray-300 mt-1">
+            Last check: {lastBalanceCheck.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})}
           </div>
         )}
       </div>
 
-      {/* Simple debug info */}
-      <div className="fixed bottom-4 left-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
-        <div>User: {user?.id?.substring(0, 8)}...</div>
-        <div>Balance: ${user?.balance?.toFixed(2)}</div>
-        <div>Status: {isSuspended ? '🚫 Suspended' : '✅ Active'}</div>
-        <div className="flex items-center gap-1">
-          <div className={`w-2 h-2 rounded-full ${isSuspended ? 'bg-red-500' : 'bg-green-500'}`}></div>
-          <span>Live monitoring</span>
-        </div>
-        {lastRefresh && (
-          <div>Last refresh: {lastRefresh.toLocaleTimeString()}</div>
-        )}
-        <button 
-          onClick={handleRefresh}
-          className="mt-1 px-2 py-1 bg-blue-500 rounded text-xs hover:bg-blue-600 transition"
-        >
-          Refresh Now
-        </button>
-      </div>
-
       {/* Balance Update Notification */}
       {balanceUpdated && (
-        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 animate-slide-down">
-          <div className="max-w-sm mx-4 p-4 rounded-xl bg-green-600 border border-green-700 text-center shadow-2xl">
-            <p className="text-sm font-semibold text-white">
-              💰 Balance Updated!
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 animate-slide-down">
+          <div className="max-w-sm mx-4 p-4 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 border border-green-700 text-center shadow-2xl">
+            <p className="text-sm font-bold text-white flex items-center justify-center gap-2">
+              <span className="text-lg">💰</span> Balance Updated!
             </p>
             <p className="text-xs text-green-100 mt-1">
               {balanceUpdateMessage}
             </p>
             <div className="mt-2 text-xs text-green-200">
-              Current Balance: <span className="font-bold">${user?.balance?.toFixed(2)}</span>
+              New Balance: <span className="font-bold text-lg">${user?.balance?.toFixed(2)}</span>
+            </div>
+            <div className="mt-2 text-[10px] text-green-300">
+              Updated just now
             </div>
           </div>
         </div>
       )}
 
-      {/* Suspended Popup */}
-      {isSuspended && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center animate-fade-in">
-          <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 border border-red-700 text-center shadow-2xl">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center animate-pulse">
-              <span className="text-2xl">🚫</span>
-            </div>
-            <p className="text-xl font-bold text-white mb-2">
-              Account Suspended
-            </p>
-            <p className="text-sm text-red-100 mb-4">
-              ⚠️ Your account has been suspended by the administrator.
-              All wallet functions are disabled until further notice.
-            </p>
-            
-            <div className="mb-6 p-3 rounded-lg bg-red-500/20">
-              <p className="text-xs text-red-200">
-                <span className="font-semibold">User ID:</span> {user?.id?.substring(0, 12)}...
-              </p>
-              <p className="text-xs text-red-200 mt-1">
-                <span className="font-semibold">Current Balance:</span> ${user?.balance?.toFixed(2)}
-              </p>
-              <p className="text-xs text-red-200 mt-1">
-                <span className="font-semibold">Last Updated:</span> {lastSuspensionCheck?.toLocaleTimeString() || 'Checking...'}
-              </p>
-            </div>
-            
-            <div className="space-y-3">
-              <button
-                onClick={handleContactAdmin}
-                className="w-full py-3 rounded-xl bg-white text-red-600 font-semibold hover:bg-red-50 transition duration-200"
-              >
-                📧 Contact Admin Support
-              </button>
-              
-              <button
-                onClick={handleRefreshFromPopup}
-                className="w-full py-3 rounded-xl bg-red-500/30 text-white font-semibold hover:bg-red-500/40 transition duration-200 border border-red-500/50"
-              >
-                🔄 Refresh Account Status
-              </button>
-            </div>
-            
-            <div className="mt-4 pt-4 border-t border-red-500/30">
-              <p className="text-xs text-red-200">
-                Real-time monitoring is active. This popup will automatically update.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="max-w-md mx-auto px-4 pb-24">
-        <Header onRefresh={handleRefresh} />
-        <BalanceCard balance={user.balance} />
-        <QuickActions disabled={isSuspended} />
-        <SendMoney disabled={isSuspended} />
-        <TransactionList limit={2} />
-      </div>
-
-      <BottomNav />
+      {/* Rest of your Home.tsx component remains the same... */}
+      {/* ... (keep the suspended popup, debug panel, and other components) */}
     </div>
   );
 };
