@@ -6,7 +6,6 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const WebSocket = require('ws');
 
 const app = express();
 
@@ -24,11 +23,13 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, postman)
     if (!origin) {
       console.log('[CORS] No origin - allowing');
       return callback(null, true);
     }
     
+    // Allow all render.com subdomains and localhost for development
     if (
       origin.includes('render.com') || 
       origin.includes('localhost') || 
@@ -38,6 +39,7 @@ const corsOptions = {
       return callback(null, true);
     }
     
+    // Check if origin is in allowed list
     if (allowedOrigins.includes(origin)) {
       console.log('[CORS] Allowed origin:', origin);
       return callback(null, true);
@@ -51,12 +53,14 @@ const corsOptions = {
   allowedHeaders: [
     'Content-Type', 
     'Authorization', 
+    'x-admin', 
     'x-user-id', 
     'user-id', 
     'X-Requested-With', 
     'Accept',
     'Origin',
-    'Cache-Control'
+    'Cache-Control',
+    'x-requested-with'
   ],
   exposedHeaders: ['Content-Range', 'X-Content-Range', 'Content-Length'],
   optionsSuccessStatus: 200,
@@ -64,7 +68,10 @@ const corsOptions = {
   preflightContinue: false
 };
 
+// Apply CORS middleware FIRST
 app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly for all routes
 app.options('*', cors(corsOptions));
 
 // =================== LOGGING MIDDLEWARE ===================
@@ -73,6 +80,7 @@ app.use((req, res, next) => {
   console.log('  Origin:', req.headers.origin);
   console.log('  x-user-id:', req.headers['x-user-id']);
   console.log('  user-id:', req.headers['user-id']);
+  console.log('  Authorization:', req.headers.authorization ? 'Present' : 'Not present');
   next();
 });
 
@@ -89,6 +97,7 @@ app.use(helmet({
   }
 }));
 
+// Rate limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
@@ -98,6 +107,7 @@ const apiLimiter = rateLimit({
   skip: (req) => req.path === '/health' || req.path === '/api/public/test'
 });
 
+// Apply rate limiting to API routes
 app.use('/api/', apiLimiter);
 
 // =================== BODY PARSING ===================
@@ -105,6 +115,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // =================== PUBLIC ENDPOINTS ===================
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
@@ -112,11 +123,11 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     cors: 'enabled',
-    environment: process.env.NODE_ENV || 'development',
-    websocket: wss ? 'enabled' : 'disabled'
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Fipay Wallet API',
@@ -124,28 +135,37 @@ app.get('/', (req, res) => {
     status: 'running',
     environment: process.env.NODE_ENV || 'development',
     cors: 'enabled',
-    realtime: 'enabled',
     admin: 'javonmorgan796@gmail.com'
   });
 });
 
+// Test CORS endpoint
 app.get('/api/test-cors', (req, res) => {
   res.json({
     success: true,
     message: 'CORS is working correctly!',
     origin: req.headers.origin,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    cors: '✅ Enabled for your origin',
+    headers: {
+      'x-user-id': req.headers['x-user-id'],
+      'user-id': req.headers['user-id'],
+      'authorization': req.headers.authorization ? 'Present' : 'Not present'
+    }
   });
 });
 
+// Public test endpoint
 app.get('/api/public/test', (req, res) => {
   res.json({
     success: true,
     message: 'Public test endpoint is working!',
-    serverTime: new Date().toISOString()
+    serverTime: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
+// Debug endpoint for CORS and authentication
 app.get('/api/debug/auth', (req, res) => {
   res.json({
     success: true,
@@ -160,16 +180,13 @@ app.get('/api/debug/auth', (req, res) => {
   });
 });
 
+// Endpoint to list all available endpoints
 app.get('/api/endpoints', (req, res) => {
   const endpoints = [
     { method: 'GET', path: '/health', auth: false },
     { method: 'GET', path: '/api/public/test', auth: false },
     { method: 'GET', path: '/api/debug/auth', auth: false },
     { method: 'GET', path: '/api/endpoints', auth: false },
-    { method: 'GET', path: '/api/users/:id/balance', auth: false },
-    { method: 'GET', path: '/api/users/:id/suspension', auth: false },
-    { method: 'GET', path: '/api/users/me/balance', auth: false },
-    { method: 'GET', path: '/api/users/me/suspension', auth: false },
     { method: 'POST', path: '/api/auth/login', auth: false },
     { method: 'POST', path: '/api/auth/signup', auth: false },
     { method: 'GET', path: '/api/auth/test', auth: true },
@@ -234,11 +251,13 @@ const userSchema = new Schema({
   }
 });
 
+// Indexes for better query performance
 userSchema.index({ email: 1 });
 userSchema.index({ createdAt: -1 });
 
 const User = mongoose.model('User', userSchema);
 
+// Deposit schema
 const depositSchema = new Schema({
   userId: { type: String, required: true, index: true },
   userEmail: { type: String, required: true, index: true },
@@ -266,12 +285,14 @@ const depositSchema = new Schema({
   }
 });
 
+// Indexes for deposits
 depositSchema.index({ userId: 1, status: 1 });
 depositSchema.index({ createdAt: -1 });
 depositSchema.index({ userEmail: 1 });
 
 const Deposit = mongoose.model('Deposit', depositSchema);
 
+// Transaction schema & model
 const transactionSchema = new Schema({
   userId: { type: String, required: true, index: true },
   type: { type: String, enum: ['send', 'receive', 'deposit', 'withdrawal'], required: true },
@@ -300,12 +321,14 @@ const transactionSchema = new Schema({
   }
 });
 
+// Indexes for transactions
 transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ type: 1 });
 transactionSchema.index({ status: 1 });
 
 const Transaction = mongoose.model('Transaction', transactionSchema);
 
+// PendingTransaction schema & model
 const pendingTransactionSchema = new Schema({
   senderId: { type: String, required: true, index: true },
   senderEmail: { type: String, required: true },
@@ -333,12 +356,14 @@ const pendingTransactionSchema = new Schema({
   }
 });
 
+// Indexes for pending transactions
 pendingTransactionSchema.index({ recipientEmail: 1, status: 1 });
 pendingTransactionSchema.index({ senderId: 1, status: 1 });
 pendingTransactionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const PendingTransaction = mongoose.model('PendingTransaction', pendingTransactionSchema);
 
+// PendingRecipient schema & model
 const pendingRecipientSchema = new Schema({
   email: { type: String, required: true, index: true },
   name: { type: String, default: '' },
@@ -360,6 +385,7 @@ const pendingRecipientSchema = new Schema({
 
 const PendingRecipient = mongoose.model('PendingRecipient', pendingRecipientSchema);
 
+// Recipient history schema & model
 const recipientHistorySchema = new Schema({
   email: { type: String, required: true, index: true },
   name: { type: String, default: '' },
@@ -403,11 +429,13 @@ const authenticateUser = async (req, res, next) => {
   try {
     console.log('[AUTH] Authenticating request for:', req.method, req.path);
     
+    // Try multiple ways to get user ID
     let userId = req.headers['x-user-id'] || 
                  req.headers['user-id'] ||
                  req.query.userId || 
                  req.body.userId;
     
+    // Check Authorization header (Bearer token format)
     if (!userId && req.headers.authorization) {
       const authHeader = req.headers.authorization;
       console.log('[AUTH] Authorization header:', authHeader);
@@ -418,10 +446,12 @@ const authenticateUser = async (req, res, next) => {
           userId = token;
         }
       } else if (mongoose.Types.ObjectId.isValid(authHeader)) {
+        // Direct ObjectId in Authorization header
         userId = authHeader;
       }
     }
 
+    // Public endpoints that don't require authentication
     const publicEndpoints = [
       '/health',
       '/api/public/test',
@@ -429,29 +459,25 @@ const authenticateUser = async (req, res, next) => {
       '/api/endpoints',
       '/api/test-cors',
       '/api/auth/login',
-      '/api/auth/signup',
-      '/api/users/me/balance',
-      '/api/users/me/suspension',
-      '/api/users/:id/balance',
-      '/api/users/:id/suspension'
+      '/api/auth/signup'
     ];
     
-    if (publicEndpoints.includes(req.path) || publicEndpoints.some(ep => {
-      if (ep.includes(':id')) {
-        const basePath = ep.split('/:id')[0];
-        return req.path.startsWith(basePath + '/');
-      }
-      return req.path.startsWith(ep);
-    })) {
+    if (publicEndpoints.includes(req.path) || publicEndpoints.some(ep => req.path.startsWith(ep))) {
       console.log('[AUTH] Public endpoint, skipping auth');
       return next();
     }
 
     if (!userId) {
       console.log('[AUTH] No user ID found for protected endpoint:', req.path);
+      console.log('[AUTH] Available headers:', {
+        'x-user-id': req.headers['x-user-id'],
+        'user-id': req.headers['user-id'],
+        'authorization': req.headers.authorization ? 'Present' : 'Not present'
+      });
       return errorResponse(res, 401, 'Authentication required. Please provide user ID in x-user-id header.');
     }
 
+    // Clean up user ID
     userId = userId.toString().trim();
     
     if (!mongoose.Types.ObjectId.isValid(userId)) {
@@ -475,6 +501,7 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
+// Middleware to restrict actions for suspended users
 const restrictSuspendedUsers = (req, res, next) => {
   if (req.user.suspended) {
     return errorResponse(res, 403, 
@@ -489,8 +516,10 @@ const requireAdmin = async (req, res, next) => {
   try {
     console.log('[ADMIN] Checking admin access for:', req.method, req.path);
     
+    // First authenticate the user
     await authenticateUser(req, res, () => {});
     
+    // Check if user exists and is admin
     if (!req.user) {
       console.log('[ADMIN] No user found for admin endpoint');
       return errorResponse(res, 401, 'Authentication required for admin access');
@@ -509,140 +538,6 @@ const requireAdmin = async (req, res, next) => {
   }
 };
 
-// =================== REAL-TIME ENDPOINTS ===================
-// Fast endpoint to check only balance (for real-time checking)
-app.get('/api/users/:id/balance', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    console.log('[BALANCE] Checking balance for user:', id);
-    
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return errorResponse(res, 400, 'Invalid user id');
-    }
-    
-    const user = await User.findById(id).select('balance suspended');
-    
-    if (!user) {
-      return errorResponse(res, 404, 'User not found');
-    }
-    
-    return successResponse(res, {
-      id: user._id,
-      balance: user.balance || 0,
-      suspended: user.suspended || false,
-      checkedAt: new Date()
-    });
-  } catch (err) {
-    console.error('[BALANCE] Error:', err);
-    return errorResponse(res, 500, 'Failed to check balance', err);
-  }
-});
-
-// Fast endpoint to check only suspension status
-app.get('/api/users/:id/suspension', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    console.log('[SUSPENSION] Checking suspension status for user:', id);
-    
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return errorResponse(res, 400, 'Invalid user id');
-    }
-    
-    const user = await User.findById(id).select('suspended suspensionReason suspensionDate');
-    
-    if (!user) {
-      return errorResponse(res, 404, 'User not found');
-    }
-    
-    console.log(`[SUSPENSION] Status for ${id}: ${user.suspended ? 'Suspended' : 'Active'}`);
-    
-    return successResponse(res, {
-      id: user._id,
-      suspended: user.suspended || false,
-      suspensionReason: user.suspensionReason || '',
-      suspensionDate: user.suspensionDate,
-      checkedAt: new Date()
-    });
-  } catch (err) {
-    console.error('[SUSPENSION] Error:', err);
-    return errorResponse(res, 500, 'Failed to check suspension status', err);
-  }
-});
-
-// Public endpoints for frontend self-check
-app.get('/api/users/me/balance', async (req, res) => {
-  try {
-    const userId = req.headers['x-user-id'] || 
-                  req.headers['user-id'] ||
-                  req.query.userId;
-    
-    if (!userId) {
-      return errorResponse(res, 400, 'User ID required');
-    }
-    
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return errorResponse(res, 400, 'Invalid user id format');
-    }
-    
-    console.log('[BALANCE-ME] Checking balance for user:', userId.substring(0, 8) + '...');
-    
-    const user = await User.findById(userId).select('balance suspended email');
-    
-    if (!user) {
-      return errorResponse(res, 404, 'User not found');
-    }
-    
-    return successResponse(res, {
-      id: user._id,
-      email: user.email,
-      balance: user.balance || 0,
-      suspended: user.suspended || false,
-      checkedAt: new Date()
-    });
-  } catch (err) {
-    console.error('[BALANCE-ME] Error:', err);
-    return errorResponse(res, 500, 'Failed to check balance', err);
-  }
-});
-
-app.get('/api/users/me/suspension', async (req, res) => {
-  try {
-    const userId = req.headers['x-user-id'] || 
-                  req.headers['user-id'] ||
-                  req.query.userId;
-    
-    if (!userId) {
-      return errorResponse(res, 400, 'User ID required');
-    }
-    
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return errorResponse(res, 400, 'Invalid user id format');
-    }
-    
-    console.log('[SUSPENSION-ME] Checking suspension status for user:', userId.substring(0, 8) + '...');
-    
-    const user = await User.findById(userId).select('suspended suspensionReason suspensionDate email');
-    
-    if (!user) {
-      return errorResponse(res, 404, 'User not found');
-    }
-    
-    return successResponse(res, {
-      id: user._id,
-      email: user.email,
-      suspended: user.suspended || false,
-      suspensionReason: user.suspensionReason || '',
-      suspensionDate: user.suspensionDate,
-      checkedAt: new Date()
-    });
-  } catch (err) {
-    console.error('[SUSPENSION-ME] Error:', err);
-    return errorResponse(res, 500, 'Failed to check suspension status', err);
-  }
-});
-
 // =================== AUTHENTICATION ENDPOINTS ===================
 app.post('/api/auth/signup', async (req, res) => {
   try {
@@ -655,16 +550,20 @@ app.post('/api/auth/signup', async (req, res) => {
       return errorResponse(res, 400, 'Missing required fields: email, password, name');
     }
 
+    // Normalize email
     email = String(email).toLowerCase().trim();
 
+    // Check if user already exists
     const existing = await User.findOne({ email });
     if (existing) {
       console.log('[SIGNUP] User already exists:', email);
       return errorResponse(res, 409, 'User already exists');
     }
 
+    // Hash password
     const hashed = await bcrypt.hash(password, 10);
     
+    // Check if this is the admin email
     const isAdmin = email === 'javonmorgan796@gmail.com';
     
     const user = new User({ 
@@ -705,11 +604,13 @@ app.post('/api/auth/login', async (req, res) => {
       return errorResponse(res, 401, 'Invalid credentials');
     }
 
+    // Check password
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) {
       return errorResponse(res, 401, 'Invalid credentials');
     }
 
+    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
@@ -728,6 +629,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// Test authentication endpoint
 app.get('/api/auth/test', authenticateUser, async (req, res) => {
   return successResponse(res, {
     message: 'Authentication successful!',
@@ -739,11 +641,16 @@ app.get('/api/auth/test', authenticateUser, async (req, res) => {
       role: req.user.role,
       suspended: req.user.suspended,
       suspensionReason: req.user.suspensionReason
+    },
+    authInfo: {
+      method: 'authenticated endpoint',
+      timestamp: new Date().toISOString()
     }
   });
 });
 
 // =================== USER ENDPOINTS ===================
+// Get current user's deposits
 app.get('/api/deposits', authenticateUser, async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
@@ -779,6 +686,7 @@ app.get('/api/deposits', authenticateUser, async (req, res) => {
   }
 });
 
+// Create deposit
 app.post('/api/deposits', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   try {
     const { crypto, symbol, amount, cryptoAmount, address, notes } = req.body;
@@ -801,6 +709,7 @@ app.post('/api/deposits', authenticateUser, restrictSuspendedUsers, async (req, 
     
     await deposit.save();
     
+    // Create transaction record
     const transaction = new Transaction({
       userId: req.userId,
       type: 'deposit',
@@ -822,6 +731,7 @@ app.post('/api/deposits', authenticateUser, restrictSuspendedUsers, async (req, 
   }
 });
 
+// Get transactions
 app.get('/api/transactions', authenticateUser, async (req, res) => {
   try {
     const { type, status, page = 1, limit = 50 } = req.query;
@@ -858,6 +768,7 @@ app.get('/api/transactions', authenticateUser, async (req, res) => {
   }
 });
 
+// =================== SEND MONEY ENDPOINT ===================
 app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -866,8 +777,10 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
       
       let { recipientType, recipientEmail, recipientDetails, amount, crypto, symbol, paymentMethod, cardId, message } = req.body;
       
+      // Use authenticated user as sender
       const senderId = req.userId;
       
+      // Normalize bank fields from top-level if not provided inside recipientDetails
       if (recipientType === 'bank' && (!recipientDetails || Object.keys(recipientDetails || {}).length === 0)) {
         const potential = {};
         const t = req.body || {};
@@ -890,6 +803,7 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
         }
       }
 
+      // Validation
       const missing = [];
       if (!recipientType) missing.push('recipientType');
       if (amount === undefined || amount === null) missing.push('amount');
@@ -904,6 +818,7 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
         throw new Error(`Missing required fields: ${missing.join(', ')}`);
       }
 
+      // Coerce amount to number
       amount = Number(amount);
       if (isNaN(amount) || amount <= 0) {
         throw new Error('Invalid amount');
@@ -911,10 +826,12 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
 
       recipientType = String(recipientType || 'email');
 
+      // Normalize email if provided
       if (recipientEmail) {
         recipientEmail = String(recipientEmail).toLowerCase().trim();
       }
 
+      // Normalize recipient details for crypto and bank
       recipientDetails = recipientDetails || {};
       crypto = String(crypto || '').trim();
       symbol = String(symbol || '').trim();
@@ -932,6 +849,7 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
         cardId 
       });
 
+      // Per-type validation
       if (recipientType === 'email') {
         if (!recipientEmail) {
           throw new Error('Missing recipientEmail for recipientType=email');
@@ -960,6 +878,7 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
         throw new Error('Sender not found');
       }
 
+      // Check sender balance
       if ((sender.balance || 0) < amount) {
         throw new Error('Insufficient balance');
       }
@@ -971,6 +890,7 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
         }
       }
 
+      // Prepare pending transaction payload
       const pendingPayload = {
         senderId: sender.id,
         senderEmail: sender.email,
@@ -1006,6 +926,7 @@ app.post('/api/transactions/send', authenticateUser, restrictSuspendedUsers, asy
   }
 });
 
+// Get user summary
 app.get('/api/user-summary', authenticateUser, async (req, res) => {
   try {
     const userId = req.userId;
@@ -1037,8 +958,10 @@ app.get('/api/user-summary', authenticateUser, async (req, res) => {
   }
 });
 
+// Get users (for admin, returns all users; for regular users, returns their own info)
 app.get('/api/users', authenticateUser, async (req, res) => {
   try {
+    // If user is admin, return all users
     if (req.user.role === 'admin') {
       const { search, page = 1, limit = 20 } = req.query;
       const query = {};
@@ -1074,6 +997,7 @@ app.get('/api/users', authenticateUser, async (req, res) => {
         }
       });
     } else {
+      // Regular users only get their own info
       const user = await User.findById(req.userId).select('-password -__v');
       return successResponse(res, { users: [user] });
     }
@@ -1083,15 +1007,19 @@ app.get('/api/users', authenticateUser, async (req, res) => {
   }
 });
 
+// Get user by ID
 app.get('/api/users/:id', authenticateUser, async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Allow users to get their own profile or admins to get any profile
     const targetId = id === 'me' ? req.userId : id;
     
     if (!mongoose.Types.ObjectId.isValid(targetId)) {
       return errorResponse(res, 400, 'Invalid user id');
     }
     
+    // Check permissions
     if (targetId !== req.userId && req.user.role !== 'admin') {
       return errorResponse(res, 403, 'You can only view your own profile');
     }
@@ -1108,6 +1036,7 @@ app.get('/api/users/:id', authenticateUser, async (req, res) => {
   }
 });
 
+// Get user by email
 app.get('/api/users/by-email', authenticateUser, async (req, res) => {
   try {
     let { email } = req.query;
@@ -1130,6 +1059,7 @@ app.get('/api/users/by-email', authenticateUser, async (req, res) => {
 });
 
 // =================== PENDING TRANSACTION ENDPOINTS ===================
+// Create pending transaction
 app.post('/api/pending', authenticateUser, restrictSuspendedUsers, async (req, res) => {
   try {
     let { recipientEmail, amount, message } = req.body;
@@ -1159,6 +1089,7 @@ app.post('/api/pending', authenticateUser, restrictSuspendedUsers, async (req, r
   }
 });
 
+// Get pending transactions for current user
 app.get('/api/pending', authenticateUser, async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
@@ -1195,6 +1126,7 @@ app.get('/api/pending', authenticateUser, async (req, res) => {
 });
 
 // =================== ADMIN ENDPOINTS ===================
+// Admin: Get all users
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const { search, page = 1, limit = 50 } = req.query;
@@ -1238,6 +1170,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: Get all deposits
 app.get('/api/admin/deposits', requireAdmin, async (req, res) => {
   try {
     const { status, userId, page = 1, limit = 50 } = req.query;
@@ -1280,6 +1213,7 @@ app.get('/api/admin/deposits', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: Approve deposit
 app.put('/api/deposits/:id/approve', requireAdmin, async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -1300,20 +1234,14 @@ app.put('/api/deposits/:id/approve', requireAdmin, async (req, res) => {
       deposit.notes = notes || deposit.notes;
       await deposit.save({ session });
 
+      // Update user balance
       const user = await User.findOne({ email: deposit.userEmail }).session(session);
       if (user) {
-        const oldBalance = user.balance || 0;
         user.balance = (user.balance || 0) + deposit.amount;
         await user.save({ session });
-        
-        console.log(`💰 User ${user.email} balance updated: $${oldBalance} → $${user.balance}`);
-        
-        // Broadcast balance update via WebSocket
-        if (typeof broadcastBalanceUpdate === 'function') {
-          broadcastBalanceUpdate(user._id, user.balance, deposit.amount);
-        }
       }
 
+      // Update transaction status
       await Transaction.findOneAndUpdate(
         { depositId: id, type: 'deposit' },
         { 
@@ -1343,6 +1271,7 @@ app.put('/api/deposits/:id/approve', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: Reject deposit
 app.put('/api/deposits/:id/reject', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1361,6 +1290,7 @@ app.put('/api/deposits/:id/reject', requireAdmin, async (req, res) => {
     deposit.notes = notes || deposit.notes;
     await deposit.save();
 
+    // Update transaction status
     await Transaction.findOneAndUpdate(
       { depositId: id, type: 'deposit' },
       { 
@@ -1378,6 +1308,7 @@ app.put('/api/deposits/:id/reject', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: Get all pending transactions
 app.get('/api/admin/pending-transactions', requireAdmin, async (req, res) => {
   try {
     const { status, page = 1, limit = 50 } = req.query;
@@ -1419,6 +1350,7 @@ app.get('/api/admin/pending-transactions', requireAdmin, async (req, res) => {
   }
 });
 
+// =================== ADMIN: APPROVE PENDING TRANSACTION ===================
 app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -1455,6 +1387,7 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
         throw new Error('Sender not found');
       }
 
+      // For email recipient type we require the pending recipient to be approved (or existing user)
       let recipient = null;
       if (p.recipientType === 'email' && p.recipientEmail) {
         const recEmail = String(p.recipientEmail).toLowerCase().trim();
@@ -1510,6 +1443,7 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
         throw new Error('Sender has insufficient balance');
       }
 
+      // Perform balance updates (always deduct sender)
       await User.updateOne({ _id: sender._id }, { $inc: { balance: -amt } }, { session });
       sender = await User.findById(sender._id).session(session);
 
@@ -1517,6 +1451,7 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
       let recipientTx = null;
 
       if (recipient) {
+        // Internal recipient: credit and create both transactions
         await User.updateOne({ _id: recipient._id }, { $inc: { balance: amt } }, { session });
         recipient = await User.findById(recipient._id).session(session);
 
@@ -1558,13 +1493,8 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
 
         await senderTx.save({ session });
         await recipientTx.save({ session });
-        
-        // Broadcast balance updates via WebSocket
-        if (typeof broadcastBalanceUpdate === 'function') {
-          broadcastBalanceUpdate(sender._id, sender.balance, -amt);
-          broadcastBalanceUpdate(recipient._id, recipient.balance, amt);
-        }
       } else {
+        // External recipient (crypto wallet / bank) — only create sender tx with recipient details
         const resolvedName = p.recipientName || 
           (p.recipientDetails?.accountName || 
            p.recipientDetails?.username || 
@@ -1589,13 +1519,9 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
         });
 
         await senderTx.save({ session });
-        
-        // Broadcast sender balance update via WebSocket
-        if (typeof broadcastBalanceUpdate === 'function') {
-          broadcastBalanceUpdate(sender._id, sender.balance, -amt);
-        }
       }
 
+      // Mark pending as claimed/approved
       p.status = 'claimed';
       p.approvedBy = adminId;
       p.approvedAt = new Date();
@@ -1628,6 +1554,7 @@ app.put('/api/admin/pending/:id/approve', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: cancel a pending transaction
 app.put('/api/admin/pending/:id/cancel', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1664,6 +1591,7 @@ app.put('/api/admin/pending/:id/cancel', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin: Get statistics
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   try {
     const [
@@ -1707,50 +1635,7 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   }
 });
 
-// =================== REAL-TIME WEBSOCKET BROADCAST FUNCTIONS ===================
-let wss;
-
-const broadcastSuspensionUpdate = (userId, suspended, reason = '') => {
-  console.log(`📢 Broadcasting suspension update for ${userId}: ${suspended ? 'Suspended' : 'Active'}`);
-  
-  const message = JSON.stringify({
-    type: 'suspension_update',
-    userId: userId,
-    suspended: suspended,
-    reason: reason,
-    timestamp: new Date().toISOString()
-  });
-  
-  if (wss) {
-    wss.clients.forEach((client) => {
-      if (client.readyState === 1 && client.userId === userId.toString()) {
-        client.send(message);
-      }
-    });
-  }
-};
-
-const broadcastBalanceUpdate = (userId, newBalance, amountChanged = 0) => {
-  console.log(`💰 Broadcasting balance update for ${userId}: $${newBalance} (Changed: ${amountChanged > 0 ? '+' : ''}${amountChanged})`);
-  
-  const message = JSON.stringify({
-    type: 'balance_update',
-    userId: userId,
-    balance: newBalance,
-    amountChanged: amountChanged,
-    timestamp: new Date().toISOString()
-  });
-  
-  if (wss) {
-    wss.clients.forEach((client) => {
-      if (client.readyState === 1 && client.userId === userId.toString()) {
-        client.send(message);
-      }
-    });
-  }
-};
-
-// Admin: Suspend/unsuspend user (with WebSocket broadcast)
+// Admin: Suspend/unsuspend user
 app.put('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1760,6 +1645,7 @@ app.put('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
       return errorResponse(res, 400, 'Invalid user id');
     }
     
+    // Don't allow suspending self
     if (id === req.userId) {
       return errorResponse(res, 400, 'Cannot suspend your own account');
     }
@@ -1783,9 +1669,6 @@ app.put('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
     
     console.log(`[ADMIN] User ${id} ${desired ? 'suspended' : 'activated'} by ${req.user.email}`);
     
-    // 🔥 BROADCAST REAL-TIME UPDATE VIA WEBSOCKET
-    broadcastSuspensionUpdate(id, desired, reason || '');
-    
     return successResponse(res, { 
       user: updated,
       message: `User ${desired ? 'suspended' : 'activated'} successfully`
@@ -1797,6 +1680,7 @@ app.put('/api/admin/users/:id/suspend', requireAdmin, async (req, res) => {
 });
 
 // =================== ERROR HANDLING ===================
+// 404 handler
 app.use('*', (req, res) => {
   console.log(`[404] Endpoint not found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
@@ -1808,6 +1692,7 @@ app.use('*', (req, res) => {
   });
 });
 
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
@@ -1841,6 +1726,8 @@ const start = async () => {
     
     console.log('✅ Connected to MongoDB');
     console.log(`📁 Database: ${mongoose.connection.db.databaseName}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🚀 Server will start on port ${PORT}`);
     
     // Ensure admin user exists
     const adminEmail = 'javonmorgan796@gmail.com';
@@ -1855,6 +1742,7 @@ const start = async () => {
         console.log(`👑 Admin user already exists: ${adminEmail}`);
       }
     } else {
+      // Create admin user if doesn't exist
       const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
       const hashedPassword = await bcrypt.hash(adminPassword, 10);
       
@@ -1871,90 +1759,19 @@ const start = async () => {
       console.log(`🔑 Default password: ${adminPassword} (Change this immediately!)`);
     }
     
-    const server = app.listen(PORT, () => {
+    app.listen(PORT, () => {
       console.log(`\n🎉 Server listening on port ${PORT}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/health`);
       console.log(`🌐 CORS enabled for: ${allowedOrigins.join(', ')}`);
+      console.log(`✅ Public test endpoint: http://localhost:${PORT}/api/public/test`);
       console.log(`🔐 Authentication via: x-user-id header or Authorization Bearer token`);
       console.log(`👑 Admin access: ${adminEmail}`);
-      console.log(`💰 Real-time balance: GET /api/users/:id/balance`);
-      console.log(`🚨 Real-time suspension: GET /api/users/:id/suspension`);
-      console.log(`⚡ WebSocket real-time updates: ws://localhost:${PORT}/ws`);
+      console.log(`💰 Send money endpoint: POST /api/transactions/send`);
+      console.log(`📥 Deposits endpoint: /api/deposits`);
+      console.log(`👥 Admin endpoints: /api/admin/*`);
+      console.log(`📊 Debug endpoint: /api/debug/auth`);
       console.log(`\n✨ Server is ready! ✨\n`);
     });
-    
-    // =================== WEBSOCKET SERVER SETUP ===================
-    wss = new WebSocket.Server({ noServer: true });
-    
-    wss.on('connection', (ws, request) => {
-      console.log('🔌 New WebSocket connection');
-      
-      const url = new URL(request.url, `http://${request.headers.host}`);
-      const userId = url.searchParams.get('userId');
-      
-      if (!userId) {
-        console.log('❌ No userId in WebSocket connection');
-        ws.close();
-        return;
-      }
-      
-      console.log(`🔌 User connected via WebSocket: ${userId.substring(0, 8)}...`);
-      ws.userId = userId;
-      
-      ws.on('message', (message) => {
-        try {
-          const data = JSON.parse(message);
-          
-          if (data.type === 'ping') {
-            ws.send(JSON.stringify({ 
-              type: 'pong', 
-              timestamp: new Date().toISOString() 
-            }));
-          }
-          
-          if (data.type === 'subscribe_balance') {
-            console.log(`📊 User ${userId.substring(0, 8)}... subscribed to balance updates`);
-          }
-          
-          if (data.type === 'subscribe_suspension') {
-            console.log(`🚨 User ${userId.substring(0, 8)}... subscribed to suspension updates`);
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      });
-      
-      ws.on('close', () => {
-        console.log(`🔌 User disconnected: ${userId.substring(0, 8)}...`);
-      });
-      
-      ws.on('error', (error) => {
-        console.error(`❌ WebSocket error for ${userId}:`, error);
-      });
-      
-      // Send welcome message
-      ws.send(JSON.stringify({
-        type: 'connected',
-        message: 'WebSocket connected successfully',
-        userId: userId,
-        timestamp: new Date().toISOString(),
-        features: ['balance_updates', 'suspension_updates']
-      }));
-    });
-    
-    // Handle WebSocket upgrade requests
-    server.on('upgrade', (request, socket, head) => {
-      const pathname = new URL(request.url, `http://${request.headers.host}`).pathname;
-      
-      if (pathname === '/ws') {
-        wss.handleUpgrade(request, socket, head, (ws) => {
-          wss.emit('connection', ws, request);
-        });
-      } else {
-        socket.destroy();
-      }
-    });
-    
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB', err);
     process.exit(1);
@@ -1968,16 +1785,6 @@ process.on('SIGTERM', async () => {
   try {
     await mongoose.connection.close();
     console.log('MongoDB connection closed.');
-    
-    if (wss) {
-      wss.clients.forEach((client) => {
-        if (client.readyState === 1) {
-          client.close();
-        }
-      });
-      console.log('WebSocket server closed.');
-    }
-    
     process.exit(0);
   } catch (err) {
     console.error('Error during shutdown:', err);
@@ -1991,16 +1798,6 @@ process.on('SIGINT', async () => {
   try {
     await mongoose.connection.close();
     console.log('MongoDB connection closed.');
-    
-    if (wss) {
-      wss.clients.forEach((client) => {
-        if (client.readyState === 1) {
-          client.close();
-        }
-      });
-      console.log('WebSocket server closed.');
-    }
-    
     process.exit(0);
   } catch (err) {
     console.error('Error during shutdown:', err);
