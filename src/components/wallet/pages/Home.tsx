@@ -19,17 +19,108 @@ const Home = () => {
   const [balanceUpdateMessage, setBalanceUpdateMessage] = useState("");
   const [lastBalanceCheck, setLastBalanceCheck] = useState<Date | null>(null);
   const [lastSuspensionCheck, setLastSuspensionCheck] = useState<Date | null>(null);
+  const [hasNotificationBeenShown, setHasNotificationBeenShown] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
   const previousBalance = useRef<number | null>(null);
   const previousSuspendedStatus = useRef<boolean | null>(null);
   const balanceCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const suspensionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Function to check balance in real-time
+  // WebSocket connection for real-time updates
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const wsUrl = `wss://${window.location.hostname.replace('http://', '').replace('https://', '')}/ws?userId=${user.id}`;
+    const socket = new WebSocket(wsUrl);
+
+    wsRef.current = socket;
+
+    socket.onopen = () => {
+      console.log('🔌 WebSocket connected');
+      setWsConnected(true);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('📨 WebSocket message received:', data);
+
+        if (data.type === 'balance_update') {
+          console.log('💰 REAL-TIME BALANCE UPDATE:', data);
+          
+          // Refresh balance to update UI
+          refreshBalance();
+          
+          // Show notification
+          if (data.amountChanged !== 0) {
+            setBalanceUpdated(true);
+            setBalanceUpdateMessage(
+              data.amountChanged > 0 
+                ? `Your balance increased by $${Math.abs(data.amountChanged).toFixed(2)}!`
+                : `Your balance decreased by $${Math.abs(data.amountChanged).toFixed(2)}`
+            );
+            
+            setTimeout(() => {
+              setBalanceUpdated(false);
+            }, 5000);
+          }
+        }
+
+        if (data.type === 'suspension_update') {
+          console.log('🚨 REAL-TIME SUSPENSION UPDATE:', data);
+          
+          // Refresh user data
+          refreshBalance();
+          
+          // Show browser notification
+          if (data.suspended && "Notification" in window && Notification.permission === "granted") {
+            new Notification("Account Suspended", {
+              body: "Your account has been suspended. Please contact support.",
+              icon: "/favicon.ico"
+            });
+          }
+          
+          // Reset notification flag
+          setHasNotificationBeenShown(false);
+        }
+
+        if (data.type === 'pong') {
+          console.log('🏓 WebSocket heartbeat received');
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+
+    socket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setWsConnected(false);
+    };
+
+    socket.onclose = () => {
+      console.log('🔌 WebSocket disconnected');
+      setWsConnected(false);
+      
+      // Try to reconnect after 5 seconds
+      setTimeout(() => {
+        console.log('🔄 Attempting WebSocket reconnection...');
+      }, 5000);
+    };
+
+    return () => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
+    };
+  }, [user?.id, refreshBalance]);
+
+  // Function to check balance in real-time (polling fallback)
   const checkBalanceRealTime = useCallback(async () => {
     if (!user?.id) return null;
     
     try {
-      const response = await fetch(`https://fipaybank.onrender.com/api/users/${user.id}/balance`, {
+      const response = await fetch(`/api/users/${user.id}/balance`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
         cache: 'no-cache'
@@ -41,7 +132,7 @@ const Home = () => {
         
         // Check if balance changed
         if (previousBalance.current !== null && data.balance !== previousBalance.current) {
-          console.log("💰 BALANCE CHANGED DETECTED!", {
+          console.log("💰 BALANCE CHANGED DETECTED VIA POLLING!", {
             from: previousBalance.current,
             to: data.balance,
             difference: data.balance - previousBalance.current
@@ -50,30 +141,24 @@ const Home = () => {
           // Update local state immediately
           await refreshBalance();
           
-          // Show notification
+          // Show notification (only if not already shown via WebSocket)
           const difference = data.balance - previousBalance.current;
-          setBalanceUpdated(true);
-          setBalanceUpdateMessage(
-            difference > 0 
-              ? `Your balance increased by $${Math.abs(difference).toFixed(2)}!`
-              : `Your balance decreased by $${Math.abs(difference).toFixed(2)}`
-          );
-          
-          setTimeout(() => {
-            setBalanceUpdated(false);
-          }, 5000);
+          if (Math.abs(difference) > 0.01) { // Only show for significant changes
+            setBalanceUpdated(true);
+            setBalanceUpdateMessage(
+              difference > 0 
+                ? `Your balance increased by $${Math.abs(difference).toFixed(2)}!`
+                : `Your balance decreased by $${Math.abs(difference).toFixed(2)}`
+            );
+            
+            setTimeout(() => {
+              setBalanceUpdated(false);
+            }, 5000);
+          }
         }
         
-        // Check if suspension changed
-        if (previousSuspendedStatus.current !== null && 
-            data.suspended !== previousSuspendedStatus.current) {
-          console.log("🚨 SUSPENSION STATUS CHANGED DETECTED!");
-          await refreshBalance();
-        }
-        
-        // Update refs
+        // Update ref
         previousBalance.current = data.balance;
-        previousSuspendedStatus.current = data.suspended;
         
         return data;
       }
@@ -84,12 +169,12 @@ const Home = () => {
     return null;
   }, [user?.id, refreshBalance]);
 
-  // Function to check ONLY suspension status
+  // Function to check ONLY suspension status (polling fallback)
   const checkSuspensionStatus = useCallback(async () => {
     if (!user?.id) return null;
     
     try {
-      const response = await fetch(`https://fipaybank.onrender.com/api/users/${user.id}/suspension`, {
+      const response = await fetch(`/api/users/${user.id}/suspension`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
         cache: 'no-cache'
@@ -115,7 +200,7 @@ const Home = () => {
     }
   }, [user]);
 
-  // Real-time balance monitoring
+  // Real-time balance monitoring (polling fallback)
   useEffect(() => {
     if (!user?.id) return;
 
@@ -124,7 +209,7 @@ const Home = () => {
     // Initial check
     checkBalanceRealTime();
 
-    // Set up frequent checks (every 5 seconds)
+    // Set up frequent checks (every 5 seconds) as fallback
     balanceCheckIntervalRef.current = setInterval(() => {
       checkBalanceRealTime();
     }, BALANCE_CHECK_INTERVAL);
@@ -136,7 +221,7 @@ const Home = () => {
     };
   }, [user?.id, checkBalanceRealTime]);
 
-  // Real-time suspension monitoring
+  // Real-time suspension monitoring (polling fallback)
   useEffect(() => {
     if (!user?.id) return;
 
@@ -145,17 +230,18 @@ const Home = () => {
     // Initial check
     checkSuspensionStatus();
 
-    // Set up frequent checks (every 3 seconds)
+    // Set up frequent checks (every 3 seconds) as fallback
     suspensionCheckIntervalRef.current = setInterval(async () => {
       const currentSuspended = user.suspended || false;
       const latestSuspended = await checkSuspensionStatus();
       
       if (latestSuspended !== null && latestSuspended !== currentSuspended) {
-        console.log("⚠️ SUSPENSION STATUS CHANGED DETECTED!");
+        console.log("⚠️ SUSPENSION STATUS CHANGED DETECTED VIA POLLING!");
         
         if (latestSuspended) {
-          console.log("🚨 USER JUST GOT SUSPENDED!");
+          console.log("🚨 USER JUST GOT SUSPENDED VIA POLLING!");
           await refreshBalance();
+          setHasNotificationBeenShown(false); // Reset to show popup
           
           if ("Notification" in window && Notification.permission === "granted") {
             new Notification("Account Suspended", {
@@ -164,7 +250,7 @@ const Home = () => {
             });
           }
         } else {
-          console.log("✅ USER JUST GOT UNSUSPENDED!");
+          console.log("✅ USER JUST GOT UNSUSPENDED VIA POLLING!");
           await refreshBalance();
         }
       }
@@ -177,6 +263,13 @@ const Home = () => {
     };
   }, [user?.id, user?.suspended, checkSuspensionStatus, refreshBalance]);
 
+  // Request notification permission
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
   // Manual refresh handler
   const handleRefresh = useCallback(async () => {
     console.log("🔄 Manual refresh triggered");
@@ -184,6 +277,20 @@ const Home = () => {
     setLastRefresh(new Date());
     await checkBalanceRealTime();
   }, [refreshBalance, checkBalanceRealTime]);
+
+  const handleContactAdmin = () => {
+    if (!user) return;
+    
+    const subject = encodeURIComponent("Account Suspension – Assistance Needed");
+    const body = encodeURIComponent(
+      `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user.id}\nEmail: ${user.email}\n\nPlease assist.\n\nThank you.`
+    );
+    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, '_blank');
+  };
+
+  const handleRefreshFromPopup = () => {
+    handleRefresh();
+  };
 
   if (isLoading) {
     return (
@@ -201,6 +308,7 @@ const Home = () => {
     return <Navigate to="/signin" replace />;
   }
 
+  // Safely get suspended status with fallback
   const isSuspended = user.suspended || false;
 
   return (
@@ -209,17 +317,44 @@ const Home = () => {
       <div className="fixed top-4 right-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${isSuspended ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
-          <span>Live: {isSuspended ? 'Suspended' : 'Active'}</span>
+          <span>Status: {isSuspended ? 'Suspended' : 'Active'}</span>
         </div>
         <div className="flex items-center gap-1 mt-1">
-          <div className="w-1 h-1 rounded-full bg-blue-500 animate-pulse"></div>
-          <span className="text-[10px] text-blue-300">Real-time monitoring</span>
+          <div className={`w-1 h-1 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`}></div>
+          <span className="text-[10px]">
+            {wsConnected ? 'Live updates' : 'Polling updates'}
+          </span>
         </div>
         {lastBalanceCheck && (
           <div className="text-[10px] text-gray-300 mt-1">
-            Last check: {lastBalanceCheck.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})}
+            Last check: {lastBalanceCheck.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
           </div>
         )}
+      </div>
+
+      {/* Debug panel */}
+      <div className="fixed bottom-4 left-4 z-40 bg-black/70 text-white text-xs p-2 rounded">
+        <div className="font-mono">
+          <div>ID: {user?.id?.substring(0, 8)}...</div>
+          <div>💰 ${user?.balance?.toFixed(2)}</div>
+          <div className={`${isSuspended ? 'text-red-400' : 'text-green-400'}`}>
+            {isSuspended ? '🚫 SUSPENDED' : '✅ Active'}
+          </div>
+          <div className="text-gray-400">
+            WS: {wsConnected ? '✅' : '❌'}
+          </div>
+          {lastRefresh && (
+            <div className="text-gray-300">
+              Refreshed: {lastRefresh.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+            </div>
+          )}
+        </div>
+        <button 
+          onClick={handleRefresh}
+          className="mt-2 px-3 py-1 bg-blue-600 rounded text-xs hover:bg-blue-700 transition w-full"
+        >
+          Refresh Now
+        </button>
       </div>
 
       {/* Balance Update Notification */}
@@ -242,8 +377,96 @@ const Home = () => {
         </div>
       )}
 
-      {/* Rest of your Home.tsx component remains the same... */}
-      {/* ... (keep the suspended popup, debug panel, and other components) */}
+      {/* Suspended Popup */}
+      {isSuspended && !hasNotificationBeenShown && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center animate-fade-in">
+          <div className="max-w-sm w-full mx-4 p-6 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 border border-red-700 text-center shadow-2xl animate-pulse-once">
+            {/* Blinking alert indicator */}
+            <div className="absolute -top-2 -right-2">
+              <div className="relative">
+                <div className="w-4 h-4 bg-red-500 rounded-full animate-ping"></div>
+                <div className="absolute top-1 left-1 w-2 h-2 bg-white rounded-full"></div>
+              </div>
+            </div>
+            
+            <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center">
+              <span className="text-3xl">🚫</span>
+            </div>
+            
+            <p className="text-2xl font-bold text-white mb-2 animate-pulse">
+              ACCOUNT SUSPENDED
+            </p>
+            
+            <div className="mb-6 p-4 rounded-lg bg-red-500/20 border border-red-500/40">
+              <p className="text-sm text-red-100 mb-3">
+                ⚠️ Your account has been <span className="font-bold">SUSPENDED</span> by the administrator.
+              </p>
+              <div className="text-left space-y-1">
+                <p className="text-xs text-red-200">
+                  <span className="font-semibold">User:</span> {user?.email}
+                </p>
+                <p className="text-xs text-red-200">
+                  <span className="font-semibold">Balance:</span> ${user?.balance?.toFixed(2)}
+                </p>
+                <p className="text-xs text-red-200">
+                  <span className="font-semibold">Time:</span> {new Date().toLocaleTimeString()}
+                </p>
+                {user.suspensionReason && (
+                  <p className="text-xs text-red-200">
+                    <span className="font-semibold">Reason:</span> {user.suspensionReason}
+                  </p>
+                )}
+              </div>
+            </div>
+            
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  handleContactAdmin();
+                  setHasNotificationBeenShown(true);
+                }}
+                className="w-full py-4 rounded-xl bg-white text-red-600 font-bold hover:bg-red-50 transition duration-200 text-lg"
+              >
+                📧 CONTACT ADMIN NOW
+              </button>
+              
+              <button
+                onClick={handleRefresh}
+                className="w-full py-3 rounded-xl bg-red-500/40 text-white font-semibold hover:bg-red-500/50 transition duration-200 border border-red-500/60"
+              >
+                🔄 Refresh Status
+              </button>
+              
+              <button
+                onClick={() => setHasNotificationBeenShown(true)}
+                className="w-full py-2 text-sm text-red-300 hover:text-white transition"
+              >
+                Continue in Read-Only Mode
+              </button>
+            </div>
+            
+            <div className="mt-6 pt-4 border-t border-red-500/30">
+              <p className="text-xs text-red-300">
+                ⚡ <span className="font-semibold">Real-time detection:</span> {wsConnected ? 'Instant' : 'Polling every 3s'}
+              </p>
+              <p className="text-[10px] text-red-400 mt-1">
+                Last checked: {lastSuspensionCheck?.toLocaleTimeString() || 'Just now'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main content */}
+      <div className="max-w-md mx-auto px-4 pb-24">
+        <Header onRefresh={handleRefresh} />
+        <BalanceCard balance={user.balance} />
+        <QuickActions disabled={isSuspended} />
+        <SendMoney disabled={isSuspended} />
+        <TransactionList limit={5} />
+      </div>
+
+      <BottomNav />
     </div>
   );
 };
