@@ -7,14 +7,14 @@ import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
-import { 
-  AlertCircle, 
-  Mail, 
-  ShieldAlert, 
-  Lock, 
+import {
+  AlertCircle,
+  Mail,
+  ShieldAlert,
+  Lock,
   RefreshCw,
   Clock,
-  HelpCircle
+  HelpCircle,
 } from "lucide-react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
@@ -25,16 +25,23 @@ const BALANCE_UPDATE_INTERVAL = 30000;
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
 
+  // 🔐 Suspension control
+  const [isSuspended, setIsSuspended] = useState(false);
+  const [statusChecked, setStatusChecked] = useState(false);
+
+  // UI state
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [balanceUpdateMessage, setBalanceUpdateMessage] = useState("");
-  const [lastSuspensionCheck, setLastSuspensionCheck] = useState<Date | null>(null);
+  const [lastSuspensionCheck, setLastSuspensionCheck] = useState<Date | null>(
+    null
+  );
   const [showSuspendedDetails, setShowSuspendedDetails] = useState(false);
 
   const previousBalance = useRef<number | null>(null);
-  const previousSuspendedStatus = useRef<boolean | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
 
+  // 💰 Balance change detector
   const handleBalanceUpdate = (newBalance: number) => {
     if (previousBalance.current === null) return;
 
@@ -51,7 +58,8 @@ const Home = () => {
     setTimeout(() => setBalanceUpdated(false), 5000);
   };
 
-  const checkUserStatus = useCallback(async () => {
+  // 🔎 MAIN suspension + balance check
+  const checkSuspendedStatus = useCallback(async () => {
     if (!user?.id) return;
 
     try {
@@ -59,46 +67,43 @@ const Home = () => {
       if (!res.ok) return;
 
       const data = await res.json();
+
+      setIsSuspended(!!data.suspended);
       setLastSuspensionCheck(new Date());
 
       if (
-        previousSuspendedStatus.current !== null &&
-        data.suspended !== previousSuspendedStatus.current
-      ) {
-        await refreshBalance();
-      }
-
-      if (
         previousBalance.current !== null &&
-        Math.abs(data.balance - previousBalance.current) > BALANCE_UPDATE_THRESHOLD
+        Math.abs(data.balance - previousBalance.current) >
+          BALANCE_UPDATE_THRESHOLD
       ) {
         handleBalanceUpdate(data.balance);
       }
 
-      previousSuspendedStatus.current = data.suspended;
       previousBalance.current = data.balance;
     } catch (err) {
-      console.error("Status check error:", err);
+      console.error("Suspension check failed:", err);
+    } finally {
+      setStatusChecked(true);
     }
-  }, [user?.id, refreshBalance]);
-
-  useEffect(() => {
-    if (!user?.id) return;
-
-    refreshBalance();
-    setLastRefresh(new Date());
-
-    previousBalance.current = user.balance ?? 0;
-    previousSuspendedStatus.current = user.suspended ?? false;
   }, [user?.id]);
 
+  // 🟢 Initial load
   useEffect(() => {
     if (!user?.id) return;
 
-    checkUserStatus();
+    previousBalance.current = user.balance ?? 0;
+    setIsSuspended(!!user.suspended);
+
+    refreshBalance();
+    checkSuspendedStatus();
+  }, [user?.id]);
+
+  // 🔁 Real-time polling
+  useEffect(() => {
+    if (!user?.id) return;
 
     pollingIntervalRef.current = window.setInterval(
-      checkUserStatus,
+      checkSuspendedStatus,
       REAL_TIME_CHECK_INTERVAL
     );
 
@@ -107,180 +112,102 @@ const Home = () => {
         clearInterval(pollingIntervalRef.current);
       }
     };
-  }, [user?.id, checkUserStatus]);
+  }, [user?.id, checkSuspendedStatus]);
 
+  // 🔄 Background balance refresh (only if NOT suspended)
   useEffect(() => {
-    if (!user?.id || user.suspended) return;
+    if (!user?.id || isSuspended) return;
 
-    const interval = window.setInterval(refreshBalance, BALANCE_UPDATE_INTERVAL);
+    const interval = window.setInterval(
+      refreshBalance,
+      BALANCE_UPDATE_INTERVAL
+    );
     return () => clearInterval(interval);
-  }, [user?.id, user?.suspended, refreshBalance]);
+  }, [user?.id, isSuspended, refreshBalance]);
 
   const handleRefresh = async () => {
     await refreshBalance();
     setLastRefresh(new Date());
-    checkUserStatus();
+    checkSuspendedStatus();
   };
 
   const handleContactAdmin = () => {
-    const subject = encodeURIComponent("Account Suspension – Assistance Needed");
-    const body = encodeURIComponent(
-      `Hello Admin,\n\nMy account has been suspended and I need assistance.\n\nUser ID: ${user?.id}\nEmail: ${user?.email}\n\nCould you please provide information on:\n1. The reason for suspension\n2. Steps to resolve this issue\n3. Expected timeframe for resolution\n\nThank you,\n${user?.email}`
+    const subject = encodeURIComponent(
+      "Account Suspension – Assistance Needed"
     );
-    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, "_blank");
+    const body = encodeURIComponent(
+      `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user?.id}\nEmail: ${user?.email}`
+    );
+    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`);
   };
 
-  const handleCheckStatus = async () => {
-    await refreshBalance();
-    setLastSuspensionCheck(new Date());
-  };
-
-  if (isLoading) {
+  // ⏳ WAIT until auth + suspension check is done
+  if (isLoading || !statusChecked) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 to-gray-100">
-        <div className="text-center">
-          <div className="animate-spin h-12 w-12 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="text-gray-600">Loading your wallet...</p>
-        </div>
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin h-12 w-12 border-4 border-primary border-t-transparent rounded-full" />
       </div>
     );
   }
 
+  // 🚪 Redirect ONLY if truly logged out
   if (!user) {
     return <Navigate to="/signin" replace />;
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 relative">
+      {/* 🔔 Balance popup */}
       {balanceUpdated && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-gradient-to-r from-green-500 to-emerald-600 text-white p-4 rounded-xl shadow-xl max-w-md w-[90%] animate-fade-in-down">
-          <div className="flex items-center gap-3">
-            <div className="bg-white/20 p-2 rounded-lg">
-              <RefreshCw className="h-5 w-5" />
-            </div>
-            <div className="flex-1">
-              <p className="font-bold text-sm">Balance Updated</p>
-              <p className="text-xs opacity-90">{balanceUpdateMessage}</p>
-            </div>
-            <button 
-              onClick={() => setBalanceUpdated(false)}
-              className="text-white/80 hover:text-white"
-            >
-              ✕
-            </button>
-          </div>
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-green-600 text-white p-4 rounded-xl shadow-xl">
+          {balanceUpdateMessage}
         </div>
       )}
 
-      {user.suspended && (
-        <div className="fixed inset-0 z-50 bg-gradient-to-br from-black/90 via-black/80 to-black/90 flex items-center justify-center p-4">
-          <div className="bg-gradient-to-br from-gray-900 to-gray-800 border border-gray-700 p-6 rounded-2xl text-white max-w-md w-full shadow-2xl animate-scale-in">
-            <div className="text-center mb-6">
-              <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-red-500 to-red-600 rounded-full mb-4">
-                <ShieldAlert className="h-8 w-8" />
-              </div>
-              <h2 className="text-2xl font-bold mb-2">Account Suspended</h2>
-              <p className="text-gray-300 text-sm">Your account access has been temporarily restricted</p>
-            </div>
-
-            <div className="space-y-4 mb-6">
-              <div className="flex items-start gap-3 p-3 bg-gray-800/50 rounded-lg">
-                <AlertCircle className="h-5 w-5 text-red-400 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="font-semibold text-sm">Temporary Restriction</p>
-                  <p className="text-gray-400 text-xs mt-1">
-                    Your account is currently under review for security purposes. This is a temporary measure to protect your funds.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-gray-800/50 rounded-lg">
-                <Lock className="h-5 w-5 text-yellow-400 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="font-semibold text-sm">Limited Access</p>
-                  <p className="text-gray-400 text-xs mt-1">
-                    You can view your balance but transactions are temporarily disabled until the review is complete.
-                  </p>
-                </div>
-              </div>
-
-              {lastSuspensionCheck && (
-                <div className="flex items-center gap-3 p-3 bg-gray-800/50 rounded-lg">
-                  <Clock className="h-5 w-5 text-blue-400" />
-                  <div className="flex-1">
-                    <p className="font-semibold text-sm">Last Checked</p>
-                    <p className="text-gray-400 text-xs">
-                      {lastSuspensionCheck.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  </div>
-                </div>
-              )}
+      {/* 🚨 Suspension modal */}
+      {isSuspended && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
+          <div className="bg-gray-900 p-6 rounded-xl max-w-md w-full text-white">
+            <div className="text-center mb-4">
+              <ShieldAlert className="h-10 w-10 text-red-500 mx-auto mb-2" />
+              <h2 className="text-xl font-bold">Account Suspended</h2>
+              <p className="text-gray-400 text-sm">
+                Your account is under review
+              </p>
             </div>
 
             <div className="space-y-3">
               <button
                 onClick={handleContactAdmin}
-                className="w-full bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98]"
+                className="w-full bg-red-600 py-2 rounded-lg"
               >
-                <Mail className="h-5 w-5" />
                 Contact Support
               </button>
 
               <button
-                onClick={handleCheckStatus}
-                className="w-full bg-gray-700 hover:bg-gray-600 text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98]"
+                onClick={checkSuspendedStatus}
+                className="w-full bg-gray-700 py-2 rounded-lg"
               >
-                <RefreshCw className="h-5 w-5" />
                 Check Status
-              </button>
-
-              <button
-                onClick={() => setShowSuspendedDetails(!showSuspendedDetails)}
-                className="w-full text-gray-400 hover:text-gray-300 py-2 text-sm flex items-center justify-center gap-1"
-              >
-                <HelpCircle className="h-4 w-4" />
-                Why was my account suspended?
               </button>
             </div>
 
-            {showSuspendedDetails && (
-              <div className="mt-4 p-4 bg-gray-800/30 rounded-lg animate-fade-in">
-                <h4 className="font-semibold text-sm mb-2">Common Reasons for Suspension:</h4>
-                <ul className="text-gray-400 text-sm space-y-1">
-                  <li>• Unusual login activity detected</li>
-                  <li>• Suspicious transaction patterns</li>
-                  <li>• Verification process required</li>
-                  <li>• Security protocol activation</li>
-                </ul>
-                <p className="text-gray-500 text-xs mt-3">
-                  Support typically responds within 24-48 hours.
-                </p>
-              </div>
+            {lastSuspensionCheck && (
+              <p className="text-xs text-gray-500 text-center mt-4">
+                Last checked:{" "}
+                {lastSuspensionCheck.toLocaleTimeString()}
+              </p>
             )}
           </div>
         </div>
       )}
 
+      {/* 🏦 Wallet UI */}
       <div className="max-w-md mx-auto px-4 pb-24">
         <Header onRefresh={handleRefresh} />
-        
-        {user.suspended && (
-          <div className="mb-4 p-4 bg-gradient-to-r from-red-500/10 to-red-600/10 border border-red-200 rounded-xl">
-            <div className="flex items-center gap-3">
-              <div className="bg-red-100 p-2 rounded-lg">
-                <Lock className="h-5 w-5 text-red-600" />
-              </div>
-              <div className="flex-1">
-                <p className="font-semibold text-red-800 text-sm">Account Restricted</p>
-                <p className="text-red-600 text-xs">Transactions temporarily disabled</p>
-              </div>
-            </div>
-          </div>
-        )}
-
         <BalanceCard balance={user.balance} />
-        <QuickActions disabled={!!user.suspended} />
-        <SendMoney disabled={!!user.suspended} />
+        <QuickActions disabled={isSuspended} />
+        <SendMoney disabled={isSuspended} />
         <TransactionList limit={2} />
       </div>
 
