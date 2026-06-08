@@ -7,15 +7,7 @@ import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
-import { 
-  AlertCircle, 
-  Mail, 
-  ShieldAlert, 
-  Lock, 
-  RefreshCw,
-  Clock,
-  HelpCircle
-} from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 const BALANCE_UPDATE_THRESHOLD = 0.01;
@@ -25,15 +17,29 @@ const BALANCE_UPDATE_INTERVAL = 30000;
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
 
+  const [showSuspendedPopup, setShowSuspendedPopup] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [balanceUpdateMessage, setBalanceUpdateMessage] = useState("");
   const [lastSuspensionCheck, setLastSuspensionCheck] = useState<Date | null>(null);
-  const [showSuspendedDetails, setShowSuspendedDetails] = useState(false);
 
   const previousBalance = useRef<number | null>(null);
   const previousSuspendedStatus = useRef<boolean | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
+
+  const handleContactAdmin = () => {
+    const subject = encodeURIComponent("Account Suspension – Assistance Needed");
+    const body = encodeURIComponent(
+      `Hello Admin,\n\nMy account has been suspended.\n\nUser ID: ${user?.id}\nEmail: ${user?.email}`
+    );
+    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, "_blank");
+  };
+
+  const handleCheckStatus = async () => {
+    await refreshBalance();
+    checkUserStatus();
+    setLastSuspensionCheck(new Date());
+  };
 
   const handleBalanceUpdate = (newBalance: number) => {
     if (previousBalance.current === null) return;
@@ -59,7 +65,15 @@ const Home = () => {
       if (!res.ok) return;
 
       const data = await res.json();
+
       setLastSuspensionCheck(new Date());
+
+      // ✅ FIX: suspension popup logic
+      if (data.suspended) {
+        setShowSuspendedPopup(true);
+      } else {
+        setShowSuspendedPopup(false);
+      }
 
       if (
         previousSuspendedStatus.current !== null &&
@@ -77,11 +91,13 @@ const Home = () => {
 
       previousSuspendedStatus.current = data.suspended;
       previousBalance.current = data.balance;
+
     } catch (err) {
       console.error("Status check error:", err);
     }
   }, [user?.id, refreshBalance]);
 
+  // ✅ INITIAL LOAD CHECK
   useEffect(() => {
     if (!user?.id) return;
 
@@ -90,8 +106,14 @@ const Home = () => {
 
     previousBalance.current = user.balance ?? 0;
     previousSuspendedStatus.current = user.suspended ?? false;
+
+    // IMPORTANT: show popup immediately if already suspended
+    if (user.suspended) {
+      setShowSuspendedPopup(true);
+    }
   }, [user?.id]);
 
+  // POLLING
   useEffect(() => {
     if (!user?.id) return;
 
@@ -109,12 +131,13 @@ const Home = () => {
     };
   }, [user?.id, checkUserStatus]);
 
+  // BALANCE REFRESH LOOP (disabled when suspended)
   useEffect(() => {
-    if (!user?.id || user.suspended) return;
+    if (!user?.id || showSuspendedPopup) return;
 
     const interval = window.setInterval(refreshBalance, BALANCE_UPDATE_INTERVAL);
     return () => clearInterval(interval);
-  }, [user?.id, user?.suspended, refreshBalance]);
+  }, [user?.id, showSuspendedPopup, refreshBalance]);
 
   const handleRefresh = async () => {
     await refreshBalance();
@@ -122,31 +145,10 @@ const Home = () => {
     checkUserStatus();
   };
 
-  const handleContactAdmin = () => {
-    const subject = encodeURIComponent("Account Suspension – Assistance Needed");
-    const body = encodeURIComponent(
-      `Hello Admin,\n\nMy account has been suspended and I need assistance.\n\nUser ID: ${user?.id}\nEmail: ${user?.email}`
-    );
-    window.open(`mailto:${ADMIN_EMAIL}?subject=${subject}&body=${body}`, "_blank");
-  };
-
-  const handleCheckStatus = async () => {
-    await refreshBalance();
-    setLastSuspensionCheck(new Date());
-  };
-
   if (isLoading) {
     return (
-      <div className="
-        min-h-screen flex items-center justify-center
-        bg-gradient-to-b from-gray-50 to-gray-100
-        dark:from-gray-900 dark:to-gray-950
-        text-gray-700 dark:text-gray-300
-      ">
-        <div className="text-center">
-          <div className="animate-spin h-12 w-12 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
-          <p>Loading your wallet...</p>
-        </div>
+      <div className="min-h-screen flex items-center justify-center">
+        Loading...
       </div>
     );
   }
@@ -156,22 +158,62 @@ const Home = () => {
   }
 
   return (
-    <div className="
-      min-h-screen relative
-      bg-gradient-to-b from-gray-50 to-gray-100
-      dark:from-gray-900 dark:to-gray-950
-      text-gray-900 dark:text-gray-100
-    ">
+    <div className="min-h-screen relative">
       <div className="max-w-md mx-auto px-4 pb-24">
         <Header onRefresh={handleRefresh} />
 
         <BalanceCard balance={user.balance} />
-        <QuickActions disabled={!!user.suspended} />
-        <SendMoney disabled={!!user.suspended} />
+
+        {/* 🚨 DISABLED WHEN SUSPENDED */}
+        <QuickActions disabled={showSuspendedPopup || !!user.suspended} />
+        <SendMoney disabled={showSuspendedPopup || !!user.suspended} />
+
         <TransactionList limit={2} />
       </div>
 
       <BottomNav />
+
+      {/* 🚨 SUSPENSION POPUP */}
+      {showSuspendedPopup && (
+        <div className="fixed inset-0 z-[9999] bg-black/70 flex items-center justify-center">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            
+            <div className="flex items-center gap-3 mb-4">
+              <ShieldAlert className="h-8 w-8 text-red-500" />
+              <h2 className="text-xl font-bold text-red-500">
+                Account Suspended
+              </h2>
+            </div>
+
+            <p className="mb-4">
+              Your account has been suspended. Wallet actions are disabled.
+              Please contact support for assistance.
+            </p>
+
+            <div className="space-y-1 text-sm">
+              <p><strong>User ID:</strong> {user?.id}</p>
+              <p><strong>Email:</strong> {user?.email}</p>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={handleContactAdmin}
+                className="flex-1 bg-red-600 text-white py-2 rounded-lg"
+              >
+                Contact Admin
+              </button>
+
+              <button
+                onClick={handleCheckStatus}
+                className="flex-1 border py-2 rounded-lg"
+              >
+                Refresh Status
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
     </div>
   );
 };
