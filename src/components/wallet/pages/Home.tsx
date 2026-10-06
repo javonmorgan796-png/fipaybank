@@ -7,7 +7,8 @@ import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
 import { Navigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, TrendingUp, Clock, ArrowUp, ArrowDown, CreditCard, Wallet as WalletIcon, CheckCircle2, BellRing } from "lucide-react";
+import { useWallet } from "@/contexts/WalletContext";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
 const BALANCE_UPDATE_THRESHOLD = 0.01;
@@ -16,6 +17,7 @@ const BALANCE_UPDATE_INTERVAL = 30000;
 
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
+  const { transactions } = useWallet();
 
   const [showSuspendedPopup, setShowSuspendedPopup] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -61,15 +63,20 @@ const Home = () => {
     if (!user?.id) return;
 
     try {
-      const res = await fetch(`/api/users/${user.id}/status`);
+      const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'https://fipaybank.onrender.com';
+      const res = await fetch(`${API_BASE}/api/users/${user.id}`, {
+        headers: {
+          "x-user-id": user.id,
+        }
+      });
       if (!res.ok) return;
 
       const data = await res.json();
+      const userData = data.user ?? data;
 
       setLastSuspensionCheck(new Date());
 
-      // ✅ FIX: suspension popup logic
-      if (data.suspended) {
+      if (userData.suspended) {
         setShowSuspendedPopup(true);
       } else {
         setShowSuspendedPopup(false);
@@ -77,27 +84,25 @@ const Home = () => {
 
       if (
         previousSuspendedStatus.current !== null &&
-        data.suspended !== previousSuspendedStatus.current
+        userData.suspended !== previousSuspendedStatus.current
       ) {
         await refreshBalance();
       }
 
       if (
         previousBalance.current !== null &&
-        Math.abs(data.balance - previousBalance.current) > BALANCE_UPDATE_THRESHOLD
+        Math.abs(userData.balance - previousBalance.current) > BALANCE_UPDATE_THRESHOLD
       ) {
-        handleBalanceUpdate(data.balance);
+        handleBalanceUpdate(userData.balance);
       }
 
-      previousSuspendedStatus.current = data.suspended;
-      previousBalance.current = data.balance;
-
+      previousSuspendedStatus.current = userData.suspended;
+      previousBalance.current = userData.balance;
     } catch (err) {
       console.error("Status check error:", err);
     }
   }, [user?.id, refreshBalance]);
 
-  // ✅ INITIAL LOAD CHECK
   useEffect(() => {
     if (!user?.id) return;
 
@@ -107,13 +112,11 @@ const Home = () => {
     previousBalance.current = user.balance ?? 0;
     previousSuspendedStatus.current = user.suspended ?? false;
 
-    // IMPORTANT: show popup immediately if already suspended
     if (user.suspended) {
       setShowSuspendedPopup(true);
     }
   }, [user?.id]);
 
-  // POLLING
   useEffect(() => {
     if (!user?.id) return;
 
@@ -131,7 +134,6 @@ const Home = () => {
     };
   }, [user?.id, checkUserStatus]);
 
-  // BALANCE REFRESH LOOP (disabled when suspended)
   useEffect(() => {
     if (!user?.id || showSuspendedPopup) return;
 
@@ -143,6 +145,26 @@ const Home = () => {
     await refreshBalance();
     setLastRefresh(new Date());
     checkUserStatus();
+  };
+
+  const sentTotal = transactions
+    .filter(t => t.type === 'send' && t.status === 'completed')
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+  const receivedTotal = transactions
+    .filter(t => t.type === 'receive' && t.status === 'completed')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const pendingTotal = transactions
+    .filter(t => t.status === 'pending')
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+    }).format(amount);
   };
 
   if (isLoading) {
@@ -164,25 +186,109 @@ const Home = () => {
 
         <BalanceCard balance={user.balance} />
 
-        {/* 🚨 DISABLED WHEN SUSPENDED */}
+        {balanceUpdated && (
+          <div className="mb-4 p-3 rounded-lg bg-green-500/10 border border-green-500/20 text-green-600 text-sm font-medium animate-fade-in">
+            ✅ {balanceUpdateMessage}
+          </div>
+        )}
+
+        <div className="grid grid-cols-3 gap-3 mb-6 animate-slide-up">
+          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:border-border transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+                <ArrowUp className="w-4 h-4 text-red-500" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mb-1">Total Sent</p>
+            <p className="text-lg font-bold text-foreground">{formatCurrency(sentTotal)}</p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:border-border transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
+                <ArrowDown className="w-4 h-4 text-green-500" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mb-1">Total Received</p>
+            <p className="text-lg font-bold text-foreground">{formatCurrency(receivedTotal)}</p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:border-border transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <div className="w-8 h-8 rounded-lg bg-yellow-500/10 flex items-center justify-center">
+                <Clock className="w-4 h-4 text-yellow-500" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mb-1">Pending</p>
+            <p className="text-lg font-bold text-foreground">{formatCurrency(pendingTotal)}</p>
+          </div>
+        </div>
+
         <QuickActions disabled={showSuspendedPopup || !!user.suspended} />
         <SendMoney disabled={showSuspendedPopup || !!user.suspended} />
 
-        <TransactionList limit={2} />
+        <div className="space-y-4 mb-6 animate-slide-up">
+          <div className="p-4 rounded-2xl bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 hover:border-primary/40 transition-all">
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
+                  <TrendingUp className="w-4 h-4 text-primary" />
+                </div>
+                <span className="font-semibold text-foreground text-sm">Quick Insights</span>
+              </div>
+            </div>
+            <div className="space-y-2 text-sm">
+              <p className="text-muted-foreground">
+                💡 You've made <span className="font-semibold text-foreground">{transactions.filter(t => t.type === 'send').length}</span> outgoing payments
+              </p>
+              <p className="text-muted-foreground">
+                📊 Your account status is <span className="font-semibold text-green-600">Active</span> and ready to transact
+              </p>
+              <p className="text-muted-foreground">
+                🔒 Your wallet is protected with <span className="font-semibold text-foreground">secure transfer controls</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:shadow-md transition-all">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
+                  <CreditCard className="w-5 h-5 text-accent" />
+                </div>
+                <div>
+                  <p className="font-semibold text-foreground text-sm">My Cards</p>
+                  <p className="text-xs text-muted-foreground">Manage your payment methods</p>
+                </div>
+              </div>
+              <span className="text-xs font-medium bg-accent/10 text-accent px-2 py-1 rounded">View</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 mb-6">
+          <div className="flex items-center justify-between px-1">
+            <h2 className="font-semibold text-foreground">Recent Activity</h2>
+            <a href="/transactions" className="text-sm text-primary hover:underline">See all</a>
+          </div>
+          <TransactionList limit={3} />
+        </div>
+
+        <div className="p-4 rounded-2xl bg-blue-500/5 border border-blue-500/20 mb-6">
+          <p className="text-xs text-blue-700 dark:text-blue-400">
+            🔐 <span className="font-semibold">Security Tip:</span> Never share your wallet details or recovery codes with anyone.
+          </p>
+        </div>
       </div>
 
       <BottomNav />
 
-      {/* 🚨 SUSPENSION POPUP */}
       {showSuspendedPopup && (
         <div className="fixed inset-0 z-[9999] bg-black/70 flex items-center justify-center">
           <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl">
-            
             <div className="flex items-center gap-3 mb-4">
               <ShieldAlert className="h-8 w-8 text-red-500" />
-              <h2 className="text-xl font-bold text-red-500">
-                Account Suspended
-              </h2>
+              <h2 className="text-xl font-bold text-red-500">Account Suspended</h2>
             </div>
 
             <p className="mb-4">
@@ -198,19 +304,18 @@ const Home = () => {
             <div className="flex gap-3 mt-6">
               <button
                 onClick={handleContactAdmin}
-                className="flex-1 bg-red-600 text-white py-2 rounded-lg"
+                className="flex-1 bg-red-600 text-white py-2 rounded-lg hover:bg-red-700 transition-colors font-medium"
               >
                 Contact Admin
               </button>
 
               <button
                 onClick={handleCheckStatus}
-                className="flex-1 border py-2 rounded-lg"
+                className="flex-1 border py-2 rounded-lg hover:bg-secondary transition-colors font-medium"
               >
                 Refresh Status
               </button>
             </div>
-
           </div>
         </div>
       )}
