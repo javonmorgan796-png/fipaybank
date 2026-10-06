@@ -174,17 +174,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     try {
       const res = await fetch(`${API_BASE}/api/users/${user.id}`, {
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": user.id,
+        },
       });
 
       if (!res.ok) return;
 
       const data = await res.json();
+      const payload = data.user ?? data;
 
       const updatedUser: User = {
         ...user,
-        balance: data.balance ?? user.balance,
-        suspended: data.suspended ?? user.suspended,
+        balance: payload.balance ?? user.balance,
+        suspended: payload.suspended ?? user.suspended ?? false,
       };
 
       setUser(updatedUser);
