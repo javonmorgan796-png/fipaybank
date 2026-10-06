@@ -9,6 +9,8 @@ interface Transaction {
   recipientEmail?: string;
   senderName?: string;
   senderEmail?: string;
+  counterpartyName?: string;
+  counterpartyEmail?: string;
   date: string;
   status: string;
 }
@@ -72,6 +74,13 @@ export const TransactionDetailDialog = ({
 
   if (transaction) {
     const isOutgoing = transaction.type === 'send';
+    const counterpartyName = isOutgoing
+      ? (transaction.recipientName || transaction.counterpartyName || 'Unknown recipient')
+      : (transaction.senderName || transaction.counterpartyName || 'Unknown sender');
+    const counterpartyEmail = isOutgoing
+      ? (transaction.recipientEmail || transaction.counterpartyEmail || 'No email provided')
+      : (transaction.senderEmail || transaction.counterpartyEmail || 'No email provided');
+
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-sm">
@@ -109,10 +118,10 @@ export const TransactionDetailDialog = ({
                     {isOutgoing ? 'Sent to' : 'Received from'}
                   </p>
                   <p className="font-medium text-foreground">
-                    {isOutgoing ? transaction.recipientName : transaction.senderName}
+                    {counterpartyName}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {isOutgoing ? transaction.recipientEmail : transaction.senderEmail}
+                    {counterpartyEmail}
                   </p>
                 </div>
               </div>
