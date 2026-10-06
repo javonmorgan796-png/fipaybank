@@ -5,9 +5,9 @@ import { SendMoney } from "@/components/wallet/SendMoney";
 import { TransactionList } from "@/components/wallet/TransactionList";
 import { BottomNav } from "@/components/wallet/BottomNav";
 import { useAuth } from "@/contexts/AuthContext";
-import { Navigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef, useCallback } from "react";
-import { ShieldAlert, TrendingUp, Clock, ArrowUp, ArrowDown, CreditCard, Wallet as WalletIcon, CheckCircle2, BellRing } from "lucide-react";
+import { ShieldAlert, CreditCard } from "lucide-react";
 import { useWallet } from "@/contexts/WalletContext";
 
 const ADMIN_EMAIL = "javonmorgan796@gmail.com";
@@ -17,7 +17,7 @@ const BALANCE_UPDATE_INTERVAL = 30000;
 
 const Home = () => {
   const { user, isLoading, refreshBalance } = useAuth();
-  const { transactions } = useWallet();
+  const navigate = useNavigate();
 
   const [showSuspendedPopup, setShowSuspendedPopup] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -147,26 +147,6 @@ const Home = () => {
     checkUserStatus();
   };
 
-  const sentTotal = transactions
-    .filter(t => t.type === 'send' && t.status === 'completed')
-    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-
-  const receivedTotal = transactions
-    .filter(t => t.type === 'receive' && t.status === 'completed')
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const pendingTotal = transactions
-    .filter(t => t.status === 'pending')
-    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-    }).format(amount);
-  };
-
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -192,93 +172,30 @@ const Home = () => {
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-3 mb-6 animate-slide-up">
-          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:border-border transition-all">
-            <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
-                <ArrowUp className="w-4 h-4 text-red-500" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mb-1">Total Sent</p>
-            <p className="text-lg font-bold text-foreground">{formatCurrency(sentTotal)}</p>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:border-border transition-all">
-            <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
-                <ArrowDown className="w-4 h-4 text-green-500" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mb-1">Total Received</p>
-            <p className="text-lg font-bold text-foreground">{formatCurrency(receivedTotal)}</p>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:border-border transition-all">
-            <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-yellow-500/10 flex items-center justify-center">
-                <Clock className="w-4 h-4 text-yellow-500" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mb-1">Pending</p>
-            <p className="text-lg font-bold text-foreground">{formatCurrency(pendingTotal)}</p>
-          </div>
-        </div>
-
         <QuickActions disabled={showSuspendedPopup || !!user.suspended} />
         <SendMoney disabled={showSuspendedPopup || !!user.suspended} />
 
-        <div className="space-y-4 mb-6 animate-slide-up">
-          <div className="p-4 rounded-2xl bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 hover:border-primary/40 transition-all">
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
-                  <TrendingUp className="w-4 h-4 text-primary" />
-                </div>
-                <span className="font-semibold text-foreground text-sm">Quick Insights</span>
-              </div>
-            </div>
-            <div className="space-y-2 text-sm">
-              <p className="text-muted-foreground">
-                💡 You've made <span className="font-semibold text-foreground">{transactions.filter(t => t.type === 'send').length}</span> outgoing payments
-              </p>
-              <p className="text-muted-foreground">
-                📊 Your account status is <span className="font-semibold text-green-600">Active</span> and ready to transact
-              </p>
-              <p className="text-muted-foreground">
-                🔒 Your wallet is protected with <span className="font-semibold text-foreground">secure transfer controls</span>
-              </p>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-card border border-border/50 hover:shadow-md transition-all">
+        <div className="mb-6 animate-slide-up">
+          <button 
+            onClick={() => navigate('/cards')}
+            className="w-full p-4 rounded-2xl bg-card border border-border/50 hover:shadow-md transition-all hover:border-border"
+          >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
                   <CreditCard className="w-5 h-5 text-accent" />
                 </div>
-                <div>
+                <div className="text-left">
                   <p className="font-semibold text-foreground text-sm">My Cards</p>
                   <p className="text-xs text-muted-foreground">Manage your payment methods</p>
                 </div>
               </div>
               <span className="text-xs font-medium bg-accent/10 text-accent px-2 py-1 rounded">View</span>
             </div>
-          </div>
+          </button>
         </div>
 
-        <div className="space-y-3 mb-6">
-          <div className="flex items-center justify-between px-1">
-            <h2 className="font-semibold text-foreground">Recent Activity</h2>
-            <a href="/transactions" className="text-sm text-primary hover:underline">See all</a>
-          </div>
-          <TransactionList limit={3} />
-        </div>
-
-        <div className="p-4 rounded-2xl bg-blue-500/5 border border-blue-500/20 mb-6">
-          <p className="text-xs text-blue-700 dark:text-blue-400">
-            🔐 <span className="font-semibold">Security Tip:</span> Never share your wallet details or recovery codes with anyone.
-          </p>
-        </div>
+        <TransactionList limit={2} />
       </div>
 
       <BottomNav />
